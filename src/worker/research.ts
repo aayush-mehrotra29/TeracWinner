@@ -1,3 +1,4 @@
+import { localWorkspaceOwnerId } from "../lib/api/workspace-identity";
 import { loadEnvConfig } from "@next/env";
 import { randomUUID } from "node:crypto";
 import { processResearchRun } from "../lib/research/pipeline";
@@ -112,7 +113,7 @@ async function pollEmailOnce(): Promise<boolean> {
     console.error(`Inbox collection failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
-    const result = await syncSentMail();
+    const result = process.env.PAID_EMAIL_WORKER_ONLY === "true" ? { pending: false } : await syncSentMail();
     backlog = backlog || result.pending;
   } catch (error) {
     console.error(`Sent mail collection failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -138,8 +139,24 @@ async function emailLoop(shouldStop: () => boolean): Promise<void> {
   }
 }
 
+async function pollPaidRuns(store: ResearchStore, humans = false): Promise<void> {
+  const { data, error } = await store.db.from("runs").select("id")
+    .eq("owner_id", localWorkspaceOwnerId()).not("input->>paymentId", "is", null)
+    .in("status", humans ? ["awaiting_humans"] : ["queued", "running"])
+    .order("created_at", { ascending: true }).limit(1);
+  if (error) throw new Error("Paid research queue unavailable.");
+  for (const row of data || []) {
+    try { await withRunLease(store, row.id, () => processResearchRun(row.id, store)); }
+    catch {
+      const run = await store.getRun(row.id);
+      await store.finish(run, "integration_blocked", run.stage ?? "intake", { message: "Paid run needs operator review before retrying." });
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const store = new ResearchStore();
+  console.log(process.env.PAID_EMAIL_WORKER_ONLY === "true" ? "Paid email worker started; unverified email cannot start research." : "Research worker started.");
   let stopped = false;
   process.on("SIGINT", () => { stopped = true; });
   process.on("SIGTERM", () => { stopped = true; });
@@ -149,10 +166,15 @@ async function main(): Promise<void> {
   let lastHumanPoll = 0;
   while (!stopped) {
     try {
-      const jobs = await claim(store);
-      for (const job of jobs) await handleJob(store, job);
+      const paidOnly = process.env.PAID_EMAIL_WORKER_ONLY === "true";
+      if (paidOnly) await pollPaidRuns(store);
+      else {
+        const jobs = await claim(store);
+        for (const job of jobs) await handleJob(store, job);
+      }
       if (Date.now() - lastHumanPoll >= HUMAN_POLL_INTERVAL_MS) {
-        await pollHumanStudies(store);
+        if (paidOnly) await pollPaidRuns(store, true);
+        else await pollHumanStudies(store);
         lastHumanPoll = Date.now();
       }
     } catch (error) {

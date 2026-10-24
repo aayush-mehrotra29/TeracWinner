@@ -11,7 +11,7 @@ async function main() {
   const command=process.argv[2] || "check";
   if(command==="check") {
     const db=createAdminClient();
-    const tables=["projects","runs","messages","outreach_intakes","paid_research_orders"];
+    const tables=["projects","runs","messages","outreach_intakes","outreach_settings"];
     const checks=await Promise.all(tables.map(async table=>{
       const {error}=await db.from(table).select("*",{head:true,count:"exact"});
       return {table,accessible:!error};

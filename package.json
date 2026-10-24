@@ -23,7 +23,8 @@
     "outreach:import": "tsx --env-file=.env.local scripts/outreach-run.ts import",
     "outreach:verify": "tsx --env-file=.env.local scripts/outreach-run.ts verify",
     "paid-intake:check": "tsx scripts/paid-intake.ts check",
-    "paid-intake:invitations": "tsx scripts/paid-intake.ts invitations"
+    "paid-intake:invitations": "tsx scripts/paid-intake.ts invitations",
+    "worker:paid-email": "PAID_EMAIL_WORKER_ONLY=true tsx src/worker/research.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

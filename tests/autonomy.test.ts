@@ -39,5 +39,5 @@ test("reply storage preserves bounded content, extracted data and the contacted 
   const store=new SupabaseStore(fake as unknown as ConstructorParameters<typeof SupabaseStore>[0]);
   const analysis=IntakeSchema.parse({category:"product_submission",summary:"Product brief",product_name:"Cup",product_description:"A reusable cup",product_url:"https://brand.com/products/cup",target_audience:"Commuters",research_question:"Which lid design is preferred?",order_reference:null,missing_information:[],next_action:"research_intake"});
   await store.saveIntake({key:"gmail:123",sender:"HELLO@brand.com",subject:"Product brief",text:"a".repeat(25000),receivedAt:new Date().toISOString(),attachmentNames:Array.from({length:60},()=>"brief.pdf")},analysis);
-  assert.equal(String(saved.body_text).length,20000);assert.equal(saved.body_incomplete,true);assert.equal(saved.lead_id,12);assert.deepEqual(saved.analysis,analysis);assert.equal((saved.attachment_names as string[]).length,50);
+  assert.equal(String(saved.body_text).length,20000);assert.equal(saved.body_incomplete,true);assert.equal(saved.lead_id,12);assert.deepEqual(saved.analysis,{...analysis,_sender_authenticated:false});assert.equal((saved.attachment_names as string[]).length,50);
 });

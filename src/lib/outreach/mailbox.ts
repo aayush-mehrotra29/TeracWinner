@@ -1,5 +1,5 @@
 import { parsePaidBrief } from "./paid-brief";
-import { CONTACT_EMAIL } from "./config";
+import { env, CONTACT_EMAIL } from "./config";
 import { analyzeEmail, type IncomingEmail, type Intake } from "./intake";
 import { store } from "./store";
 import { isOptOut } from "./campaign";
@@ -19,7 +19,8 @@ export async function processEmail(email: IncomingEmail, repository: IntakeRepos
 }
 export async function checkInbox() {
   const since = emailStartDate(); const client = gmailClient(); const db = store();
-  const lockKey = `gmail:${CONTACT_EMAIL}`; const owner = await db.claim(lockKey, 180);
+  const paidOnly = env("PAID_EMAIL_WORKER_ONLY") === "true";
+  const lockKey = `gmail:${CONTACT_EMAIL}${paidOnly ? ":paid" : ""}`; const owner = await db.claim(lockKey, 180);
   if (!owner) return { busy: true, processed: 0, pending: true };
   await db.setSetting("inbox_pending","true");
   const started = Date.now(); const deadline = setTimeout(() => client.close(), 85000);
@@ -30,10 +31,10 @@ export async function checkInbox() {
     try {
       const mailbox = client.mailbox;
       if (!mailbox) throw new Error("Gmail Inbox unavailable");
-      const key = gmailMailboxKey(String(mailbox.uidValidity), since); const lastUid = await db.checkpoint(key);
+      const key = gmailMailboxKey(String(mailbox.uidValidity), since) + (paidOnly ? ":paid" : ""); const lastUid = await db.checkpoint(key);
       const highest = mailbox.uidNext - 1;
       if (highest <= lastUid || mailbox.exists === 0) return { busy: false, processed: 0, pending: false };
-      const found = await client.search({ since, uid: `${lastUid + 1}:${highest}` }, { uid: true });
+      const found = await client.search({ since, uid: `${lastUid + 1}:${highest}`, ...(paidOnly ? { body: "ORIT-PAID-BRIEF/1" } : {}) }, { uid: true });
       if (!found) throw new Error("Gmail search did not complete");
       const ids = pendingUids(found, lastUid, highest);
       if (!ids.length) return { busy: false, processed: 0, pending: false };
@@ -58,6 +59,8 @@ export async function checkInbox() {
               await db.suppress(email.sender, "Opt-out received"); await db.saveIntake(email, { ...manualIntake("Opt-out received; future outreach suppressed."), next_action: "no_action" }); processed++;
             } else if (email.sender.toLowerCase() === CONTACT_EMAIL || email.automatic) {
               await db.saveIntake(email, { ...manualIntake("Automated or self-sent message; no reply sent."), next_action: "no_action" }); processed++;
+            } else if (paidOnly && !parsePaidBrief(email.text)) {
+              await db.saveIntake(email, manualIntake("Invalid paid brief format; no model or research authorized.")); processed++;
             } else if (await processEmail(email, repository)) processed++;
           }
         }
