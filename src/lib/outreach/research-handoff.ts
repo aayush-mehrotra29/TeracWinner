@@ -3,60 +3,39 @@ import { createAdminClient } from "@/lib/db/admin";
 import { localWorkspaceOwnerId } from "@/lib/api/workspace-identity";
 import { createProjectAndRun } from "@/lib/api/research";
 import { parseResearchInput, type ResearchInput } from "@/lib/api/validation";
-import { IntakeSchema, type Intake } from "./intake";
+import { env } from "./config";
+import { parsePaidBrief, verifyIntakeToken } from "./paid-brief";
+import { PaymentRejected, verifyPayment, type PaidOrder } from "./whop";
 
 type Admin = ReturnType<typeof createAdminClient>;
-
 export type ClaimedIntake = {
-  message_key: string;
-  sender: string;
-  subject: string;
-  body_text: string | null;
-  body_incomplete: boolean;
-  attachment_names: unknown;
-  received_at: string;
-  analysis: unknown;
-  research_attempts: number;
-  research_claim_token: string;
+  message_key: string; sender: string; subject: string; body_text: string | null;
+  body_incomplete: boolean; attachment_names: unknown; sender_authenticated: boolean;
+  received_at: string; analysis: unknown; research_attempts: number; research_claim_token: string;
 };
-
-/** Stable across worker restarts, while remaining below the API's 128-character key cap. */
-export function emailRunKey(messageKey: string): string {
-  return `email:${createHash("sha256").update(messageKey).digest("hex")}`;
+export function emailRunKey(paymentId: string): string {
+  return `whop:${createHash("sha256").update(paymentId).digest("hex")}`;
 }
-
-export function inputFromEmail(row: ClaimedIntake):
-  | { status: "ready"; input: ResearchInput }
-  | { status: "needs_details" | "skipped"; reason: string } {
-  const parsed = IntakeSchema.safeParse(row.analysis);
-  if (!parsed.success) return { status: "needs_details", reason: "Saved email classification is incomplete." };
-  const intake: Intake = parsed.data;
-  if (intake.category !== "product_submission") {
-    return { status: "skipped", reason: `Email classified as ${intake.category}.` };
+export function inputFromEmail(row: ClaimedIntake, order?: PaidOrder):
+  | { status: "ready"; input: ResearchInput & { paymentId: string } }
+  | { status: "needs_details" | "needs_payment" | "skipped"; reason: string } {
+  const brief = parsePaidBrief(row.body_text || "");
+  if (!brief || !row.sender_authenticated) return { status: "needs_payment", reason: "A signed paid brief from an authenticated buyer is required." };
+  if (row.body_incomplete || (Array.isArray(row.attachment_names) && row.attachment_names.length)) {
+    return { status: "needs_details", reason: "Use the complete plain-text brief; attachments require human review." };
   }
-  if (row.body_incomplete) {
-    return { status: "needs_details", reason: "Email body was truncated; inspect the original message." };
+  if (!order || brief.paymentId !== order.paymentId || row.sender.toLowerCase() !== order.buyerEmail || !verifyIntakeToken(brief.token, order)) {
+    return { status: "needs_payment", reason: "Payment or buyer-bound intake token could not be verified." };
   }
-  const description = (intake.product_description || row.body_text || "").trim();
-  if (description.length < 8) {
-    return { status: "needs_details", reason: "Product details are missing from the readable email text." };
-  }
-  const question = intake.research_question?.trim() || "Where is this product promising, where does it fall short, and what should be tested next?";
-  const idea = [intake.product_name?.trim(), description, `Research decision: ${question}`]
-    .filter(Boolean).join("\n\n").slice(0, 12000);
-  const audience = intake.target_audience?.trim() || "US consumers (broad default; sender did not specify an audience)";
-  const base = { idea, mode: "light_simulation", concepts: [], urls: [], imageAssetIds: [], audience };
-  const candidateUrl = intake.product_url?.trim();
-  if (candidateUrl) {
-    try { return { status: "ready", input: parseResearchInput({ ...base, urls: [candidateUrl] }) }; }
-    catch { /* The untrusted URL is omitted; the text-only analysis can proceed. */ }
-  }
-  return { status: "ready", input: parseResearchInput(base) };
+  try {
+    const input = parseResearchInput({
+      idea: `${brief.name}\n\n${brief.description}\n\nResearch decision: ${brief.question}`,
+      mode: order.mode, audience: brief.audience, concepts: [], imageAssetIds: [], urls: brief.url ? [brief.url] : [],
+    });
+    return { status: "ready", input: { ...input, paymentId: order.paymentId } };
+  } catch { return { status: "needs_details", reason: "The brief contains invalid product details or a non-public URL." }; }
 }
-
-async function finishClaim(
-  db: Admin, row: ClaimedIntake, fields: Record<string, unknown>,
-): Promise<void> {
+async function finishClaim(db: Admin, row: ClaimedIntake, fields: Record<string, unknown>): Promise<void> {
   const { data, error } = await db.from("outreach_intakes").update({
     ...fields, research_claim_token: null, research_claimed_at: null,
   }).eq("message_key", row.message_key).eq("research_claim_token", row.research_claim_token)
@@ -64,42 +43,50 @@ async function finishClaim(
   if (error) throw error;
   if (!data?.length) throw new Error("Email intake claim was lost before completion.");
 }
-
-/** Claims one saved email and links it to one queued run; safe to call repeatedly. */
-export async function handoffOneEmail(db: Admin = createAdminClient()): Promise<boolean> {
-  const claimToken = randomUUID();
-  const { data, error } = await db.rpc("orit_claim_research_intake", { p_token: claimToken });
+export async function handoffOneEmail(db: Admin = createAdminClient(), verify = verifyPayment): Promise<boolean> {
+  if (env("PAID_EMAIL_INTAKE_ENABLED") !== "true") return false;
+  const { data, error } = await db.rpc("orit_claim_research_intake", { p_token: randomUUID() });
   if (error) throw error;
-  // PostgREST serializes a null composite as an object with null fields.
   if (!data || !(data as { message_key?: string | null }).message_key) return false;
   const row = data as ClaimedIntake;
-  const decision = inputFromEmail(row);
-  if (decision.status !== "ready") {
-    await finishClaim(db, row, {
-      research_status: decision.status,
-      research_error: decision.reason,
-      research_next_attempt_at: new Date().toISOString(),
-    });
-    return true;
-  }
   try {
+    const brief = parsePaidBrief(row.body_text || "");
+    if (!brief || !row.sender_authenticated) {
+      await finishClaim(db, row, { research_status: "needs_payment", research_error: "Authenticated paid brief required." }); return true;
+    }
+    // Fetch live payment, including refunds/disputes, before reserving anything.
+    const order = await verify(brief.paymentId, row.sender);
+    const decision = inputFromEmail(row, order);
+    if (decision.status !== "ready") {
+      await finishClaim(db, row, { research_status: decision.status, research_error: decision.reason }); return true;
+    }
+    const { data: reserved, error: reserveError } = await db.rpc("orit_reserve_paid_brief", {
+      p_payment_id: order.paymentId, p_message_key: row.message_key, p_buyer: order.buyerEmail,
+      p_plan_id: order.planId, p_mode: order.mode,
+    });
+    if (reserveError) throw reserveError;
+    if (!reserved) {
+      await finishClaim(db, row, { research_status: "skipped", research_error: "This payment already belongs to another brief." }); return true;
+    }
     const ownerId = localWorkspaceOwnerId();
-    const { project, run } = await createProjectAndRun(db, ownerId, decision.input,
-      emailRunKey(row.message_key));
+    const { project, run } = await createProjectAndRun(db, ownerId, decision.input, emailRunKey(order.paymentId));
+    const { error: linkError } = await db.from("paid_research_orders").update({ run_id: run.id, project_id: project.id })
+      .eq("payment_id", order.paymentId).eq("message_key", row.message_key);
+    if (linkError) throw linkError;
     await finishClaim(db, row, {
-      research_status: "linked", research_owner_id: ownerId,
-      research_project_id: project.id, research_run_id: run.id,
-      research_started_at: new Date().toISOString(), research_error: null,
+      research_status: "linked", research_owner_id: ownerId, research_project_id: project.id,
+      research_run_id: run.id, research_started_at: new Date().toISOString(), research_error: null,
     });
     return true;
   } catch (caught) {
-    const message = caught instanceof Error ? caught.message : String(caught);
-    const exhausted = row.research_attempts >= 3;
+    if (caught instanceof PaymentRejected) {
+      await finishClaim(db, row, { research_status: "needs_payment", research_error: "Whop payment is not eligible for this sender and package." }); return true;
+    }
     await finishClaim(db, row, {
-      research_status: exhausted ? "failed" : "pending",
-      research_error: message.slice(0, 500),
-      research_next_attempt_at: new Date(Date.now() + Math.min(60_000 * 2 ** row.research_attempts, 10 * 60_000)).toISOString(),
+      research_status: row.research_attempts >= 3 ? "failed" : "pending",
+      research_error: "Paid intake is unavailable; no additional run authorized. Check worker configuration.",
+      research_next_attempt_at: new Date(Date.now() + 60_000 * 2 ** row.research_attempts).toISOString(),
     });
-    throw caught;
+    throw new Error("Paid email handoff unavailable; inspect worker configuration.");
   }
 }

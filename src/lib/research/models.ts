@@ -1,3 +1,4 @@
+import { verifyPayment } from "../outreach/whop";
 import { createHash, randomUUID } from "node:crypto";
 import { IntegrationBlockedError } from "../providers/errors";
 import { estimateOpenAiCost, ModelOutputError, structuredResponse, type JsonSchema, type ReasoningEffort, type ResearchModel } from "../providers/openai";
@@ -28,6 +29,10 @@ export class ResearchModels {
     promptVersion?: string;
   }): Promise<T> {
     this.store.assertLease();
+    if (this.run.input.paymentId) {
+      const paid = await verifyPayment(this.run.input.paymentId);
+      if (paid.mode !== this.run.mode) throw new IntegrationBlockedError("Payment does not authorize this research mode", "whop");
+    }
     const maxOutputTokens = args.maxOutputTokens ?? 2400;
     const effort = args.effort ?? (args.model === "gpt-6-luna" ? "low" : "medium");
     const promptVersion = args.promptVersion ?? "2026-10-24-v1";

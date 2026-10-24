@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { processResearchRun } from "../lib/research/pipeline";
 import { ResearchStore } from "../lib/research/store";
 import { syncHostedInbox } from "../lib/outreach/hosted";
+import { syncPaidInvitations } from "../lib/outreach/paid-invitations";
 import { syncSentMail } from "../lib/outreach/sent";
 import { handoffOneEmail } from "../lib/outreach/research-handoff";
 import { humanPollPage } from "./polling";
@@ -102,6 +103,8 @@ async function pollHumanStudies(store: ResearchStore): Promise<void> {
 
 async function pollEmailOnce(): Promise<boolean> {
   let backlog = false;
+  try { await syncPaidInvitations(); }
+  catch { console.error("Paid invitation sync unavailable; check payment and worker configuration."); }
   try {
     const result = await syncHostedInbox();
     backlog = result.pending;

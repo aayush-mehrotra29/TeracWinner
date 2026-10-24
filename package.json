@@ -21,7 +21,9 @@
     "outreach:bundle": "tsx scripts/build-hosted.ts",
     "outreach:configure": "tsx --env-file=.env.local scripts/outreach-run.ts configure",
     "outreach:import": "tsx --env-file=.env.local scripts/outreach-run.ts import",
-    "outreach:verify": "tsx --env-file=.env.local scripts/outreach-run.ts verify"
+    "outreach:verify": "tsx --env-file=.env.local scripts/outreach-run.ts verify",
+    "paid-intake:check": "tsx scripts/paid-intake.ts check",
+    "paid-intake:invitations": "tsx scripts/paid-intake.ts invitations"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

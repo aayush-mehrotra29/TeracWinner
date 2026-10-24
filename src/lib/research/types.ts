@@ -27,6 +27,7 @@ export type ResearchStage =
   | "human_addendum";
 
 export interface IdeaInput {
+  paymentId?: string;
   idea: string;
   concepts?: string[];
   audience?: string;

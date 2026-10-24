@@ -1,3 +1,4 @@
+import { parsePaidBrief } from "./paid-brief";
 import { CONTACT_EMAIL } from "./config";
 import { analyzeEmail, type IncomingEmail, type Intake } from "./intake";
 import { store } from "./store";
@@ -6,7 +7,13 @@ import { emailStartDate, gmailClient, gmailMailboxKey, gmailMessageKey, GMAIL_FO
 export type IntakeRepository = { exists: (key: string) => Promise<boolean>; save: (email: IncomingEmail, intake: Intake) => Promise<void> };
 export async function processEmail(email: IncomingEmail, repository: IntakeRepository, analyze = analyzeEmail): Promise<boolean> {
   if (await repository.exists(email.key)) return false;
-  const intake = await analyze(email);
+  const brief = parsePaidBrief(email.text);
+  const intake: Intake = brief ? {
+    category: "product_submission", summary: "Formatted paid brief; payment verification pending.",
+    product_name: brief.name, product_description: brief.description, product_url: brief.url || null,
+    target_audience: brief.audience, research_question: brief.question, order_reference: brief.paymentId,
+    missing_information: [], next_action: "research_intake",
+  } : await analyze(email);
   await repository.save(email, intake);
   return true;
 }

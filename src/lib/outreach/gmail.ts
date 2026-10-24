@@ -33,6 +33,15 @@ export function gmailMessageKey(emailId: string | undefined, mailboxKey: string,
 export function pendingUids(found: number[] | false, lastUid: number, highest: number): number[] {
   return [...new Set(found || [])].filter(uid => Number.isInteger(uid) && uid > lastUid && uid <= highest).sort((a, b) => a - b).slice(0, 3);
 }
+export function gmailAuthenticatedSender(headerLines: readonly { key: string; line: string }[], sender: string): boolean {
+  // Only Gmail's first Authentication-Results header is authoritative. Never
+  // accept a later duplicate supplied inside an inbound message.
+  const first = headerLines.find(header => header.key.toLowerCase() === "authentication-results")?.line.replace(/\r?\n\s+/g, " ");
+  const domain = sender.toLowerCase().split("@")[1];
+  if (!first || !domain || !/^Authentication-Results:\s*mx\.google\.com;/i.test(first)) return false;
+  const dmarc = /(?:^|;)\s*dmarc=pass\b[^;]*\bheader\.from=([^;\s]+)/i.exec(first);
+  return dmarc?.[1]?.toLowerCase() === domain;
+}
 export async function parseGmailMessage(source: Buffer, base: Omit<IncomingEmail, "text" | "attachmentNames">): Promise<IncomingEmail> {
   if (source.byteLength > 256000) throw new Error("Message exceeds intake size limit");
   const parsed = await simpleParser(source, { skipHtmlToText: false, skipTextToHtml: true, skipImageLinks: true, keepDeliveryStatus: true });
@@ -40,7 +49,10 @@ export async function parseGmailMessage(source: Buffer, base: Omit<IncomingEmail
   const report = typeof contentType === "object" && contentType !== null && "value" in contentType ? String(contentType.value) : String(contentType || "");
   const failedRecipients = /multipart\/report/i.test(report) ? parsed.attachments.filter(a => a.contentType === "message/delivery-status").flatMap(a => [...a.content.toString("utf8").matchAll(/Final-Recipient:\s*rfc822;\s*([^\s<>]+@[^\s<>]+)/gi)].map(m => m[1].toLowerCase())).slice(0, 20) : [];
   const automatic = Boolean(parsed.headers.get("auto-submitted") && parsed.headers.get("auto-submitted") !== "no") || /^(mailer-daemon|postmaster)@/i.test(base.sender);
-  return { ...base, automatic, failedRecipients, text: parsed.text || "", attachmentNames: parsed.attachments.map(a => (a.filename || "unnamed attachment").slice(0, 200)).slice(0, 20) };
+  const from = parsed.from?.value;
+  const senderAuthenticated = from?.length === 1 && from[0].address?.toLowerCase() === base.sender.toLowerCase()
+    && gmailAuthenticatedSender(parsed.headerLines, base.sender);
+  return { ...base, senderAuthenticated: Boolean(senderAuthenticated), automatic, failedRecipients, text: parsed.text || "", attachmentNames: parsed.attachments.map(a => (a.filename || "unnamed attachment").slice(0, 200)).slice(0, 20) };
 }
 export async function checkGmailConnection() {
   const client = gmailClient();

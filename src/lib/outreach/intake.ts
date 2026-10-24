@@ -11,7 +11,7 @@ export const IntakeSchema = z.object({
   next_action: z.enum(["research_intake", "needs_details", "human_review", "no_action"]),
 });
 export type Intake = z.infer<typeof IntakeSchema>;
-export type IncomingEmail = { key: string; sender: string; subject: string; text: string; receivedAt: string; attachmentNames: string[]; incomplete?: boolean; automatic?: boolean; failedRecipients?: string[] };
+export type IncomingEmail = { key: string; sender: string; subject: string; text: string; receivedAt: string; attachmentNames: string[]; incomplete?: boolean; automatic?: boolean; failedRecipients?: string[]; senderAuthenticated?: boolean };
 export function normalizeIntake(input: Intake, incomplete = false): Intake {
   const result = IntakeSchema.parse(input);
   // Do not let model-generated routing silently treat an incomplete submission as ready.

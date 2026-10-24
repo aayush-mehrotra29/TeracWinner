@@ -5,6 +5,8 @@ export type ResearchMode = "light_research" | "light_simulation" | "deep_simulat
 
 export interface ResearchInput {
   idea: string;
+  /** Server-supplied only; never populated by parseResearchInput from a browser. */
+  paymentId?: string;
   mode: ResearchMode;
   concepts: string[];
   urls: string[];

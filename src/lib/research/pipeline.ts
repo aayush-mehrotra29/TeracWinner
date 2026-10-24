@@ -1,3 +1,4 @@
+import { verifyPayment } from "../outreach/whop";
 import { IntegrationBlockedError } from "../providers/errors";
 import { renderReportPdf } from "../report/pdf";
 import { ResearchModels } from "./models";
@@ -40,6 +41,10 @@ export async function processResearchRun(runId: string, injectedStore?: Research
   if (run.status === "awaiting_approval" || run.status === "needs_input") return;
   const models = new ResearchModels(store, run);
   try {
+    if (run.input.paymentId) {
+      const paid = await verifyPayment(run.input.paymentId);
+      if (paid.mode !== run.mode) throw new IntegrationBlockedError("Purchased plan does not authorize this research mode", "whop");
+    }
     if (run.mode === "deep_simulation" && !await prepareDeepStudy(store, run)) return;
     const intake = await runIntake(store, run, models);
     if (!intake.decision.trim() || !intake.audience.trim()) {
