@@ -269,6 +269,7 @@ export default function SignIn() {
                 <div className="auth-account">
                   <div className="auth-account-label">Signed in as</div>
                   <div className="auth-account-email">{session?.user.email ?? "Your account"}</div>
+                  <a className="auth-text-link" href="/outreach">Open Orit email outreach</a>
                   <button className="auth-primary-button" type="button" onClick={handleSignOut} disabled={pending}>
                     {pending ? <LoaderCircle size={17} className="auth-spinner" aria-hidden="true" /> : <LogOut size={17} aria-hidden="true" />}
                     <span>{pending ? "Signing out…" : "Sign out"}</span>

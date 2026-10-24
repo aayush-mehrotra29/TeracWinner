@@ -1,10 +1,10 @@
 # TeracWinner
 
-An auth-only Next.js and React site for TeracWinner. It currently supports email sign-in, account creation, password recovery, Google sign-in, session persistence, and sign-out. The right panel is an animated Canvas2D hatch effect generated from the procedural smoke palette; it does not use a photo or video.
+A Next.js and React site for TeracWinner. It currently supports email sign-in, account creation, password recovery, Google sign-in, session persistence, and sign-out. The right panel is an animated Canvas2D hatch effect generated from the procedural smoke palette; it does not use a photo or video.
 
 ## Run locally
 
-Use Node.js 20.9 or newer.
+Use Node.js 24.13 or newer for the email worker.
 
 ```bash
 npm ci
@@ -14,7 +14,7 @@ npm run dev
 
 Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `.env.local` to the new Supabase project's public API values. Never put a database password, Google OAuth client secret, or Supabase secret/service-role key in a `NEXT_PUBLIC_` variable or commit it to Git.
 
-Open [http://localhost:3000](http://localhost:3000). The application is intentionally only an authentication page for now.
+Open [http://localhost:3000](http://localhost:3000). The home page provides authentication. The outreach branch adds Exa ecommerce prospect discovery, personalized Gmail outreach, reply intake and an optional private queue at `/outreach`. See [agent setup](docs/OUTREACH_SETUP.md). The agent runs on Supabase Edge Functions and Cron with hosted Postgres state; it does not depend on a running laptop. OpenAI and Exa API usage use their respective account credits and billing.
 
 ## Auth configuration
 

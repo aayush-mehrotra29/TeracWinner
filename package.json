@@ -7,27 +7,55 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "outreach:check": "tsx --env-file=.env.local scripts/outreach-run.ts health",
+    "outreach:smoke": "tsx --env-file=.env.local scripts/outreach-run.ts smoke",
+    "outreach": "tsx --env-file=.env.local scripts/outreach-run.ts",
+    "outreach:discover": "tsx --env-file=.env.local scripts/outreach-run.ts discover",
+    "outreach:draft": "tsx --env-file=.env.local scripts/outreach-run.ts draft",
+    "outreach:status": "tsx --env-file=.env.local scripts/outreach-run.ts status",
+    "outreach:inbox": "tsx --env-file=.env.local scripts/outreach-run.ts inbox",
+    "outreach:send": "tsx --env-file=.env.local scripts/outreach-run.ts send",
+    "outreach:bundle": "tsx scripts/build-hosted.ts",
+    "outreach:configure": "tsx --env-file=.env.local scripts/outreach-run.ts configure",
+    "outreach:import": "tsx --env-file=.env.local scripts/outreach-run.ts import",
+    "outreach:verify": "tsx --env-file=.env.local scripts/outreach-run.ts verify"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "2.118.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
+    "html-to-text": "^10.0.1",
+    "imapflow": "^2.9.1",
     "lucide-react": "1.61.0",
+    "mailparser": "^3.12.4",
     "next": "16.4.3",
+    "nodemailer": "^10.2.1",
+    "openai": "^7.43.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "tailwind-merge": "3.7.0"
+    "tailwind-merge": "3.7.0",
+    "tldts": "^7.4.19",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.3.3",
+    "@types/html-to-text": "^9.0.4",
+    "@types/mailparser": "^3.9.0",
     "@types/node": "26.6.5",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "esbuild": "^0.28.2",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.3",
     "tailwindcss": "4.3.3",
+    "tsx": "^4.23.15",
     "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=24.13.0"
   }
 }

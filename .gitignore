@@ -6,3 +6,9 @@ out/
 .env*.local
 .DS_Store
 npm-debug.log*
+
+# Private agent state (prospects, drafts, opt-outs and inbox records)
+.outreach/
+
+# Rebuild the hosted function bundle from source before deployment
+supabase/functions/orit-outreach/worker.js
