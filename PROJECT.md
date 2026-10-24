@@ -1,3 +1,3 @@
-# TeracWinner
+# Orit
 
 A hackathon-winning project.

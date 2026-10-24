@@ -77,32 +77,29 @@ function smokeAt(
 ) {
   const u = ((x / width) * 2 - 1) * Math.max(0.8, width / height);
   const v = (y / height) * 2 - 1;
-  const drift = time * 0.23; // shaderSource.speed = 40
-  const turbulence = fbm(u * 1.1 + drift * 0.35, v * 1.1 - drift * 0.22);
-  const fine = noise(u * 4.2 - drift * 0.2, v * 4.2 + drift * 0.16);
-  const warp = (turbulence - 0.5) * 0.44 + (fine - 0.5) * 0.08; // warp = 37
-  const warpedV = v + warp;
+  const drift = time * 0.16; // shaderSource.speed = 40
 
-  // Two moving, irregular light threads wrapped in a softer smoke field.
-  const centerA =
-    -0.13 + 0.24 * Math.sin(u * 1.35 + drift * 0.7) + 0.07 * Math.sin(u * 3.4 - drift);
-  const centerB =
-    0.34 + 0.22 * Math.sin(u * 1.7 - drift * 0.52 + 1.8) +
-    0.06 * Math.sin(u * 4.1 + drift * 0.6);
-  const distanceA = (warpedV - centerA) / 0.24;
-  const distanceB = (warpedV - centerB) / 0.19;
-  const ribbonA = Math.exp(-distanceA * distanceA);
-  const ribbonB = Math.exp(-distanceB * distanceB);
-  const filaments = Math.pow(
-    0.5 + 0.5 * Math.sin(u * 21 + warpedV * 8 + turbulence * 5 - drift * 2),
-    11,
+  // Domain-warped value noise makes soft, irregular smoke rather than a pair
+  // of mathematically smooth waves. Warp/detail follow the supplied recipe.
+  const warpX = fbm(u * 1.45 + drift * 0.7, v * 1.45 - drift * 0.45);
+  const warpY = fbm(u * 1.45 - 13 - drift * 0.35, v * 1.45 + 8 + drift * 0.55);
+  const smokeX = u + (warpX - 0.5) * 0.75; // shaderSource.warp = 37
+  const smokeY = v + (warpY - 0.5) * 0.75;
+  const body = fbm(smokeX * 1.65 + drift * 0.33, smokeY * 1.65 - drift * 0.2);
+  const detail = fbm(smokeX * 4.8 - drift * 0.6, smokeY * 4.8 + drift * 0.39);
+  const filament = Math.sin(smokeX * 11 + smokeY * 5 + (detail - 0.5) * 5);
+  const center = smokeY + 0.06 - 0.24 * Math.sin(smokeX * 1.8 + time * 0.15);
+  const veil = Math.exp(-((center / 0.65) ** 2));
+  const cloud = Math.pow(
+    clamp((body - 0.49) * 4.8 + (detail - 0.5) * 1.05 + filament * 0.055 + veil * 0.07),
+    1.35,
   );
-  const ambient = Math.max(0, turbulence * 0.38 + fine * 0.12 - 0.12);
-  const shimmer = 0.7 + 0.3 * Math.sin(u * 8.5 - v * 3.5 - time * 1.35);
-  let strength =
-    ambient +
-    (ribbonA * 0.78 + ribbonB * 0.64) * (0.68 + shimmer * 0.32) +
-    filaments * Math.max(ribbonA, ribbonB) * 0.29;
+
+  // animStyle = shimmer, animSpeed = 100, animIntensity = 60. The very fine
+  // stable grain stands in for shaderSource.grain = 12 before ASCII sampling.
+  const shimmer = 0.5 + 0.5 * Math.sin(smokeX * 10.2 - smokeY * 4.1 - time * 1.2);
+  let strength = cloud * (0.87 + shimmer * 0.13);
+  strength += (hash(Math.floor(x * 0.65), Math.floor(y * 0.65)) - 0.5) * 0.07;
 
   if (pointer) {
     // shaderSource.mouseReactive spotlight, cursorStrength 65, cursorRadius 50.
@@ -142,6 +139,7 @@ export default function ThreadLightCanvas({ className }: ThreadLightCanvasProps)
     let lastFrame = -Infinity;
     let startTime = performance.now();
     let reducedMotion = false;
+    let isVisible = true;
     let needsStillFrame = true;
     let proceduralImage = proceduralContext.createImageData(1, 1);
     const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -171,7 +169,7 @@ export default function ThreadLightCanvas({ className }: ThreadLightCanvasProps)
     function draw(now: number) {
       if (!output || !sourceContext || !proceduralContext || !sampledContext) return;
       frame = window.requestAnimationFrame(draw);
-      if (document.hidden || (reducedMotion && !needsStillFrame)) return;
+      if (document.hidden || !isVisible || (reducedMotion && !needsStillFrame)) return;
       if (!reducedMotion && now - lastFrame < 1000 / 24) return;
       lastFrame = now;
       needsStillFrame = false;
@@ -227,28 +225,46 @@ export default function ThreadLightCanvas({ className }: ThreadLightCanvasProps)
 
           // 4. brightness 0, contrast 150%, saturation 0, grayscale 100%.
           // tintOpacity 0 and blurType off leave the sampled tone unchanged.
-          red = clamp(((red / 4 - 128) * 1.5 + 128) / 255);
-          green = clamp(((green / 4 - 128) * 1.5 + 128) / 255);
-          blue = clamp(((blue / 4 - 128) * 1.5 + 128) / 255);
-          const luminance = clamp(red * 0.2126 + green * 0.7152 + blue * 0.0722);
-          const level = Math.min(6, Math.floor(luminance * 7));
+          const sourceLuminance =
+            (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 4;
+          const luminance = clamp(((sourceLuminance - 128) * 1.5 + 128) / 255);
+          // 5. halftone at 30% also gently breaks up tone boundaries.
+          const orderedOffset = (BAYER_4[row % 4][column % 4] / 16 - 0.5) * 0.09;
+          const cellGrain = hash(column, row) - 0.5;
+          const level = Math.min(
+            6,
+            Math.floor(clamp(luminance + orderedOffset + cellGrain * 0.12) * 7),
+          );
           if (level === 0) continue;
 
           const path = paths[level];
           const left = column * CELL_SIZE;
           const top = row * CELL_SIZE;
-          // 3. Hatch primitives use extra crossing strokes as light increases.
-          path.moveTo(left + 1, top + 7);
-          path.lineTo(left + 7, top + 1);
-          if (level >= 3) {
-            path.moveTo(left + 1, top + 1);
-            path.lineTo(left + 7, top + 7);
+          const jitterX = (hash(column + 31, row + 73) - 0.5) * 1.2;
+          const jitterY = (hash(column + 94, row - 17) - 0.5) * 1.2;
+          // 3. Hatch primitives add parallel and crossing strokes with light.
+          if (level === 1) {
+            path.moveTo(left + 3 + jitterX, top + 6 + jitterY);
+            path.lineTo(left + 5 + jitterX, top + 4 + jitterY);
+          } else {
+            path.moveTo(left + 1 + jitterX, top + 7 + jitterY);
+            path.lineTo(left + 7 + jitterX, top + 1 + jitterY);
           }
-          if (level >= 5) {
-            path.moveTo(left + 1, top + 3);
-            path.lineTo(left + 3, top + 1);
-            path.moveTo(left + 5, top + 7);
-            path.lineTo(left + 7, top + 5);
+          if (level >= 3) {
+            path.moveTo(left + 1 + jitterX, top + 3 + jitterY);
+            path.lineTo(left + 3 + jitterX, top + 1 + jitterY);
+            path.moveTo(left + 5 + jitterX, top + 7 + jitterY);
+            path.lineTo(left + 7 + jitterX, top + 5 + jitterY);
+          }
+          if (level === 6 || (level === 5 && cellGrain > -0.25)) {
+            path.moveTo(left + 1 + jitterX, top + 1 + jitterY);
+            path.lineTo(left + 7 + jitterX, top + 7 + jitterY);
+          }
+          if (level >= 6) {
+            path.moveTo(left + 1 + jitterX, top + 5 + jitterY);
+            path.lineTo(left + 3 + jitterX, top + 7 + jitterY);
+            path.moveTo(left + 5 + jitterX, top + 1 + jitterY);
+            path.lineTo(left + 7 + jitterX, top + 3 + jitterY);
           }
 
           // 5. Enabled halftone post-effect at intensity 30.
@@ -259,12 +275,12 @@ export default function ThreadLightCanvas({ className }: ThreadLightCanvasProps)
         }
       }
 
-      output.fillStyle = "#07120f";
+      output.fillStyle = "#030705";
       output.fillRect(0, 0, width, height);
       output.lineCap = "round";
-      output.lineWidth = 0.8;
       for (let level = 1; level <= 6; level++) {
-        output.strokeStyle = `rgba(242, 242, 238, ${0.12 + level * 0.125})`;
+        output.lineWidth = 0.8 + level * 0.07;
+        output.strokeStyle = `rgba(242, 242, 238, ${0.13 + level * 0.13})`;
         output.stroke(paths[level]);
       }
       output.fillStyle = "rgba(245, 245, 240, 0.3)";
@@ -295,6 +311,11 @@ export default function ThreadLightCanvas({ className }: ThreadLightCanvasProps)
     reducedMotion = motionQuery.matches;
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
+    const intersectionObserver = new IntersectionObserver(([entry]) => {
+      isVisible = entry.isIntersecting;
+      if (isVisible) needsStillFrame = true;
+    });
+    intersectionObserver.observe(canvas);
     resize();
     frame = window.requestAnimationFrame(draw);
     canvas.addEventListener("pointermove", onPointerMove);
@@ -304,6 +325,7 @@ export default function ThreadLightCanvas({ className }: ThreadLightCanvasProps)
     return () => {
       window.cancelAnimationFrame(frame);
       observer.disconnect();
+      intersectionObserver.disconnect();
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerleave", onPointerLeave);
       motionQuery.removeEventListener("change", onMotionChange);

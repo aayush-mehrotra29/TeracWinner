@@ -1,5 +1,7 @@
-import SignIn from "@/components/ui/sign-in-3";
+import Workspace from "@/components/workspace/Workspace";
+import "@/components/workspace/workspace.css";
+import "@/components/workspace/workspace-restyle.css";
 
 export default function Home() {
-  return <SignIn />;
+  return <Workspace />;
 }

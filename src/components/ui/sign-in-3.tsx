@@ -247,15 +247,15 @@ export default function SignIn() {
   const copy = pageCopy[mode];
 
   return (
-    <main className="auth-page" aria-label="TeracWinner account access">
+    <main className="auth-page" aria-label="Orit account access">
       <section className="auth-form-panel">
-        <div className="auth-brand" aria-label="TeracWinner">Terac<span>Winner</span><span className="auth-brand-dot" /></div>
+        <div className="auth-brand" aria-label="Orit">Orit<span className="auth-brand-dot" /></div>
 
         <div className="auth-content">
           <header className="auth-heading">
             <div className="auth-orb" aria-hidden="true"><div className="auth-orb-inner"><UserRound size={25} strokeWidth={1.8} /></div></div>
             <h1>{signedIn ? "You’re signed in" : recoveryExpired ? "Recovery link expired" : copy.title}</h1>
-            <p>{signedIn ? "Your TeracWinner account is ready." : recoveryExpired ? "Request a new link to reset your password." : copy.description}</p>
+            <p>{signedIn ? "Your Orit account is ready." : recoveryExpired ? "Request a new link to reset your password." : copy.description}</p>
           </header>
 
           {!ready ? (

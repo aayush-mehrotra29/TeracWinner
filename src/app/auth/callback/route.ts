@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
+function authRedirect(url: URL) {
+  return NextResponse.redirect(url, {
+    headers: { "Cache-Control": "private, no-store" },
+  });
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
@@ -11,7 +17,7 @@ export async function GET(request: Request) {
     : new URL("/", url.origin);
 
   if (!code) {
-    return NextResponse.redirect(new URL("/?error=missing-code", url.origin));
+    return authRedirect(new URL("/?error=missing-code", url.origin));
   }
 
   try {
@@ -19,8 +25,8 @@ export async function GET(request: Request) {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (error) throw error;
   } catch {
-    return NextResponse.redirect(new URL("/?error=callback-failed", url.origin));
+    return authRedirect(new URL("/?error=callback-failed", url.origin));
   }
 
-  return NextResponse.redirect(next);
+  return authRedirect(next);
 }

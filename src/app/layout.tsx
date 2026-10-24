@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "TeracWinner | Sign in",
-  description: "Sign in to TeracWinner.",
+  title: "Orit | Research Studio",
+  description: "Research, simulate, and evaluate a product idea in one workspace.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
