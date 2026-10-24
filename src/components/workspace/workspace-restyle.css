@@ -364,6 +364,17 @@
 .studio-graph-node p { color: #5d5d5d; font-size: 11px; }
 .studio-graph-node .react-flow__handle { background: #5d5d5d; }
 .studio-flow-canvas .react-flow__node.selected .studio-graph-node { border-color: #0d0d0d; box-shadow: none; }
+.studio-graph-node.kind-source,
+.studio-graph-node.kind-evidence { border-top: 3px solid #5c82cf; background: #f8faff; }
+.studio-graph-node.kind-claim { border-top: 3px solid #3a9c93; background: #f7fbfa; }
+.studio-graph-node.kind-assumption { border-top: 3px solid #9299a5; background: #fafafa; }
+.studio-graph-node.kind-context,
+.studio-graph-node.kind-buyer,
+.studio-graph-node.kind-persona { border-top: 3px solid #8165b8; background: #fbf9ff; }
+.studio-graph-node.kind-objection { border-top: 3px solid #c47c4d; background: #fffaf6; }
+.studio-graph-node.kind-outcome,
+.studio-graph-node.kind-report { border-top: 3px solid #4b9a74; background: #f7fbf8; }
+.studio-graph-node.kind-scenario { border-top: 3px solid #bf9850; background: #fffbf3; }
 .studio-map-list { height: 500px; background: #f9f9f9; }
 .studio-map-list-item { border-color: var(--studio-line); border-radius: 10px; }
 .studio-map-list-item:hover,
