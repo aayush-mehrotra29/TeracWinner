@@ -10,7 +10,9 @@ const QUEUE_VISIBILITY_SECONDS = 600;
 const RUN_LEASE_SECONDS = 180;
 const MAX_DELIVERIES = 3;
 const POLL_INTERVAL_MS = 8_000;
-const HUMAN_POLL_INTERVAL_MS = 5 * 60_000;
+// Terac MCP has no webhook and this app runs only on localhost. Poll promptly
+// so the first matched Tally submission can release the saved deep-run gate.
+const HUMAN_POLL_INTERVAL_MS = 15_000;
 let humanPollCursor = 0;
 
 interface ClaimedJob {

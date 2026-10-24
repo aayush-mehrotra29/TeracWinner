@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { Activity, ArrowRight, ChevronLeft, FileText, Link2, Menu, MessageCircle, Network, Plus, RotateCw, X } from "lucide-react";
+import { DEEP_PARTICIPANT_TARGET } from "@/lib/research/deep-config";
 import Composer, { type FollowupInput, type StartInput } from "./Composer";
 import ExploreMap from "./ExploreMap";
 import ReportView, { asReportContent } from "./ReportView";
@@ -25,7 +26,7 @@ const stageLabels: Record<string, string> = {
   intake: "Frame the decision", evidence: "Find market evidence", world: "Build the world model",
   contexts: "Create buyer contexts", evaluations: "Test independent decisions", sensitivities: "Change the conditions",
   discussion: "Surface objections", synthesis: "Synthesize findings", review: "Challenge the report",
-  report: "Publish the report", terac_feasibility: "Quote human study", terac_fieldwork: "Terac fieldwork", human_addendum: "Compare human feedback",
+  report: "Publish the report", terac_opportunity: "Prepare Terac opportunity", terac_feasibility: "Quote human study", terac_fieldwork: "Terac opportunity live", human_addendum: "Compare human feedback",
 };
 
 const modeLabels: Record<ResearchMode, string> = {
@@ -33,8 +34,8 @@ const modeLabels: Record<ResearchMode, string> = {
 };
 
 const statusLabels: Record<string, string> = {
-  queued: "Queued", running: "In progress", needs_input: "Needs your input", awaiting_approval: "Study approval needed",
-  awaiting_humans: "Human study in progress", completed: "Completed", failed: "Run failed", integration_blocked: "Integration blocked",
+  queued: "Queued", running: "In progress", needs_input: "Needs your input", awaiting_approval: "Opportunity confirmation needed",
+  awaiting_humans: "Awaiting participant submission", completed: "Completed", failed: "Run failed", integration_blocked: "Integration blocked",
 };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -91,6 +92,16 @@ function tallyFormUrl(study: Study | null): string | null {
       if (url.protocol === "https:" && (url.hostname === "tally.so" || url.hostname.endsWith(".tally.so"))) return url.href;
     } catch { /* A malformed saved URL is not rendered as a link. */ }
   }
+  return null;
+}
+
+function teracDraftEditorUrl(study: Study): string | null {
+  const value = study.materials?.draftEditorUrl;
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol === "https:" && (url.hostname === "terac.com" || url.hostname.endsWith(".terac.com"))) return url.href;
+  } catch { /* An invalid provider URL is not shown as a link. */ }
   return null;
 }
 
@@ -167,11 +178,12 @@ function eventText(event: RunEvent): string {
     case "needs_input": return "The run needs more information before continuing";
     case "integration_blocked": return "A required integration or budget is unavailable";
     case "error": return "The run encountered an error";
+    case "terac_draft_created": return "A Terac opportunity draft is ready for price and materials review";
     case "terac_quote": return event.payload?.status === "pending" ? "Terac feasibility quote requested" : "A Terac study quote is ready for approval";
-    case "terac_approved": return "The Terac study quote and survey materials were approved";
+    case "terac_approved": return "The live Terac opportunity and survey materials were confirmed";
     case "tally_form_created": return "A product-specific Tally survey was created";
-    case "terac_launched": return "The Tally survey was linked to the Terac study";
-    case "first_human_response": return "First completed response matched to Terac. Agent simulation can begin";
+    case "terac_launched": return "Orit began monitoring the launched Terac opportunity";
+    case "first_human_response": return "First completed submission matched to Terac. Agent simulation can begin";
     case "addendum_ready": return "A human feedback addendum is ready";
     default: return event.kind.replaceAll("_", " ");
   }
@@ -182,18 +194,18 @@ type SurveyPhase = "preparing" | "approval" | "waiting" | "started";
 function SurveyGateCard({ study, phase, assetIds }: { study: Study | null; phase: SurveyPhase; assetIds: string[] }) {
   const url = tallyFormUrl(study);
   const materials = study?.materials && typeof study.materials === "object" ? study.materials : null;
-  const title = phase === "preparing" ? url ? "Survey ready, Terac setup in progress" : "Preparing the human study" : phase === "approval" ? "Study approval needed" : phase === "waiting" ? "Waiting for the first response" : "First response received";
+  const title = phase === "preparing" ? url ? "Survey ready, Terac opportunity in progress" : "Preparing the opportunity" : phase === "approval" ? "Opportunity confirmation needed" : phase === "waiting" ? "Waiting for the first submission" : "First submission received";
   const detail = phase === "preparing"
-    ? url ? "The Tally survey is created. Orit is arranging Terac fieldwork; participants have not been invited yet. Agent research has not started." : "Orit is preparing a Tally survey from your product description and any attached images, then connecting it to Terac. Agent research has not started."
-    : phase === "approval" ? "Review the confirmed Terac quote and survey materials in Chat. Fieldwork starts after your approval, and agent research waits for the first completed response."
-      : phase === "waiting" ? "The Tally form is live through Terac. The agent simulation begins after one completed response is matched to the Terac study."
-        : "The first Terac response has arrived. Orit is now running the research and synthetic buyer simulation.";
+    ? url ? `The Tally survey is created. Orit is preparing a ${DEEP_PARTICIPANT_TARGET}-person Terac opportunity and its price for your review. Agent research has not started.` : "Orit is preparing a Tally survey from your product description and images, then creating a Terac opportunity. Agent research has not started."
+    : phase === "approval" ? "Review the current Terac total and survey materials, then approve the opportunity in Chat."
+      : phase === "waiting" ? "The Tally form is live through Terac. Agent research begins after one completed submission is matched to this opportunity."
+        : "The first Terac submission has arrived. Orit is now running research and synthetic buyer simulation.";
   return <section className="studio-survey-gate" aria-label="Deep simulation study status">
-    <div className="studio-survey-gate-heading"><span className="studio-caps">Human-first deep simulation</span><span className={`studio-survey-gate-signal is-${phase}`}><span />{phase === "preparing" ? "Setting up" : phase === "approval" ? "Your approval" : phase === "waiting" ? "Awaiting response" : "Research running"}</span></div>
+    <div className="studio-survey-gate-heading"><span className="studio-caps">Human-first deep simulation · {DEEP_PARTICIPANT_TARGET}-person cap</span><span className={`studio-survey-gate-signal is-${phase}`}><span />{phase === "preparing" ? "Setting up" : phase === "approval" ? "Your approval" : phase === "waiting" ? "Awaiting submission" : "Research running"}</span></div>
     <h3>{title}</h3><p>{detail}</p>
     {url && <a className="studio-survey-gate-link" href={url} target="_blank" rel="noopener noreferrer">Open Tally survey <ArrowRight size={16} /></a>}
-    {phase === "waiting" && !url && <p className="studio-survey-gate-note">The study is waiting for a response. Its Tally link will appear here when the saved form is available.</p>}
-    <ol className="studio-survey-gate-steps" aria-label="Deep simulation sequence"><li className={url ? "is-done" : "is-current"}>Create survey</li><li className={phase === "preparing" || phase === "approval" ? "is-current" : "is-done"}>Launch Terac</li><li className={phase === "waiting" ? "is-current" : phase === "started" ? "is-done" : ""}>First response</li><li className={phase === "started" ? "is-current" : ""}>Agent simulation</li></ol>
+    {phase === "waiting" && !url && <p className="studio-survey-gate-note">The opportunity is waiting for a submission. Its Tally link will appear here when the saved form is available.</p>}
+    <ol className="studio-survey-gate-steps" aria-label="Deep simulation sequence"><li className={url ? "is-done" : "is-current"}>Create survey</li><li className={phase === "preparing" || phase === "approval" ? "is-current" : "is-done"}>Review and launch opportunity</li><li className={phase === "waiting" ? "is-current" : phase === "started" ? "is-done" : ""}>First submission</li><li className={phase === "started" ? "is-current" : ""}>Agent simulation</li></ol>
     {materials && <details className="studio-survey-gate-details"><summary>What participants see</summary><StudyMaterialsView materials={materials} assetIds={assetIds} /></details>}
   </section>;
 }
@@ -215,12 +227,24 @@ function selectedGraph(snapshot: RunSnapshot, selectedSeq: number | null): Graph
   return artifact?.data as Graph | undefined ?? null;
 }
 
-function QuotePanel({ study, assetIds, busy, onApprove }: { study: Study; assetIds: string[]; busy: boolean; onApprove: (quoteId: string, amountUsd: number, fingerprint: string) => Promise<void> }) {
+function OpportunityApprovalPanel({ study, assetIds, busy, refreshing, onApprove, onRefresh }: { study: Study; assetIds: string[]; busy: boolean; refreshing: boolean; onApprove: (quoteId: string, amountUsd: number, fingerprint: string) => Promise<void>; onRefresh: () => Promise<void> }) {
   const [shareApproved, setShareApproved] = useState(false);
   const quote = study.quote && typeof study.quote === "object" ? study.quote : null;
   const materials = study.materials && typeof study.materials === "object" ? study.materials : null;
-  const ready = Boolean(quote?.id && typeof quote?.amountUsd === "number" && Number.isFinite(quote.amountUsd) && study.approvalFingerprint && materials);
-  return <div className="studio-study-card"><div className="studio-study-card-top"><span className="studio-caps">Human-first deep study</span><strong>12 qualified US responses</strong></div><p>Review the confirmed Terac quote and Tally survey before approving a paid launch. The agent simulation begins after the first completed response is matched to this Terac study.</p>{quote && <div className="studio-study-amount"><span>Confirmed study quote · {quote.currency || "USD"}</span><strong>{typeof quote.amountUsd === "number" ? `$${quote.amountUsd.toFixed(2)}` : "Pending"}</strong></div>}{materials && <StudyMaterialsView materials={materials} assetIds={assetIds} />}{quote && <details><summary>View quote details</summary><pre>{JSON.stringify(redactedMaterial(quote, typeof materials?.taskUrl === "string" ? materials.taskUrl : undefined), null, 2)}</pre></details>}<label className="studio-share-approval"><input type="checkbox" checked={shareApproved} onChange={(event) => setShareApproved(event.target.checked)} /><span>I approve the quoted spend and sharing the materials shown above with study participants.</span></label><button type="button" className="studio-study-approve" onClick={() => quote && study.approvalFingerprint && onApprove(quote.id, quote.amountUsd, study.approvalFingerprint)} disabled={busy || !ready || !shareApproved}>{busy ? "Approving…" : "Approve and launch paid study"}<ArrowRight size={16} /></button></div>;
+  const isOpportunity = study.target_count === DEEP_PARTICIPANT_TARGET || Boolean(teracDraftEditorUrl(study));
+  const editorUrl = teracDraftEditorUrl(study);
+  const targetCount = typeof study.target_count === "number" ? study.target_count : DEEP_PARTICIPANT_TARGET;
+  const ready = Boolean(quote?.id && typeof quote?.amountUsd === "number" && Number.isFinite(quote.amountUsd) && quote.amountUsd > 0 && study.approvalFingerprint && materials);
+  const displayedTotal = typeof quote?.amountUsd === "number" && Number.isFinite(quote.amountUsd) ? `$${quote.amountUsd.toFixed(2)}` : "Pending";
+  return <div className="studio-study-card"><div className="studio-study-card-top"><span className="studio-caps">Human-first deep study</span><strong>Up to {targetCount} qualified US participants</strong></div>
+    <p>{isOpportunity ? "Review Terac's current all-in price and the survey materials. Approve the five-person opportunity before it launches; agent research starts after the first completed submission is matched to it." : "Review the existing Terac quote and Tally survey before approving a paid launch."}</p>
+    {isOpportunity && editorUrl && <p><a href={editorUrl} target="_blank" rel="noopener noreferrer">Open Terac opportunity ↗</a></p>}
+    {quote && <div className="studio-study-amount"><span>{isOpportunity ? "Current Terac opportunity total" : "Confirmed study quote"} · {quote.currency || "USD"}</span><strong>{displayedTotal}</strong></div>}
+    {isOpportunity && <button type="button" className="studio-study-refresh" onClick={() => { setShareApproved(false); void onRefresh(); }} disabled={busy || refreshing}><RotateCw size={15} className={refreshing ? "studio-spin" : undefined} />{refreshing ? "Refreshing Terac price…" : "Refresh Terac price"}</button>}
+    {materials && <StudyMaterialsView materials={materials} assetIds={assetIds} />}
+    {quote && <details><summary>{isOpportunity ? "View draft price details" : "View quote details"}</summary><pre>{JSON.stringify(redactedMaterial(quote, typeof materials?.taskUrl === "string" ? materials.taskUrl : undefined), null, 2)}</pre></details>}
+    <label className="studio-share-approval"><input type="checkbox" checked={shareApproved} onChange={(event) => setShareApproved(event.target.checked)} /><span>I approve the current Terac total and sharing the materials shown above with participants.</span></label>
+    <button type="button" className="studio-study-approve" onClick={() => quote && study.approvalFingerprint && onApprove(quote.id, quote.amountUsd, study.approvalFingerprint)} disabled={busy || refreshing || !ready || !shareApproved}>{busy ? "Approving…" : isOpportunity ? `Approve ${displayedTotal} total and launch` : "Approve and launch paid study"}<ArrowRight size={16} /></button></div>;
 }
 
 export default function Workspace() {
@@ -237,6 +261,7 @@ export default function Workspace() {
   const [starting, setStarting] = useState(false);
   const [sending, setSending] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -474,8 +499,19 @@ export default function Workspace() {
       announceWorkspaceUpdate();
       if (activeRunId) await loadRun(activeRunId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not approve the study.");
+      setError(cause instanceof Error ? cause.message : "Could not confirm the Terac opportunity.");
     } finally { setApproving(false); }
+  }
+
+  async function refreshStudyPrice(studyId: string) {
+    setRefreshing(true);
+    setError(null);
+    try {
+      await api(`/api/studies/${studyId}/refresh`, { method: "POST" });
+      if (activeRunId) await loadRun(activeRunId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not refresh the Terac price.");
+    } finally { setRefreshing(false); }
   }
 
   function openReportCitation(anchor: string, version: number | null) {
@@ -516,17 +552,18 @@ export default function Workspace() {
     : null;
   const activeStatusLabel = snapshot?.run.status === "awaiting_humans"
     ? surveyPhase === "preparing"
-      ? snapshot.study?.status === "feasibility_pending" ? "Terac quote pending" : "Preparing human study"
-      : surveyPhase === "waiting" ? "Waiting for a human response" : statusLabels.awaiting_humans
+      ? snapshot.study?.status === "feasibility_pending" ? "Terac quote pending" : "Preparing Terac opportunity"
+      : surveyPhase === "waiting" ? "Waiting for first submission" : statusLabels.awaiting_humans
     : statusLabels[snapshot?.run.status ?? "queued"];
-  const hasFeasibility = activeEvents.some((event) => event.stage === "terac_feasibility");
+  const studySetupStage = activeEvents.some((event) => event.stage === "terac_feasibility") &&
+    !activeEvents.some((event) => event.stage === "terac_opportunity") ? "terac_feasibility" : "terac_opportunity";
   const humanFirstDeep = isDeep && (!reportReady || Boolean(tallyFormUrl(snapshot?.study ?? null)) || firstHumanResponse);
   const simulationStages = ["intake", "evidence", "world", "contexts", "evaluations", "sensitivities", "discussion", "synthesis", "review", "report"];
   const stages = snapshot?.run.mode === "light_research"
     ? ["intake", "evidence", "world", "synthesis", "review", "report"]
     : humanFirstDeep
-      ? [...(hasFeasibility ? ["terac_feasibility"] : []), "terac_fieldwork", ...simulationStages, "human_addendum"]
-      : [...simulationStages, ...(snapshot?.study ? ["terac_feasibility", "terac_fieldwork", "human_addendum"] : [])];
+      ? [studySetupStage, "terac_fieldwork", ...simulationStages, "human_addendum"]
+      : [...simulationStages, ...(snapshot?.study ? [studySetupStage, "terac_fieldwork", "human_addendum"] : [])];
   const completedStages = new Set(activeEvents.filter((event) => event.kind === "stage_completed").map((event) => event.stage));
   if (firstHumanResponse) completedStages.add("terac_fieldwork");
   const messages = (snapshot?.messages ?? []).filter((message) => message.run_id === snapshot?.run.id);
@@ -591,12 +628,12 @@ export default function Workspace() {
               <div className="studio-chat-layout"><div className="studio-chat-main"><div className="studio-conversation">
                 <div className="studio-chat-date"><span />Analysis conversation<span /></div>
                 <div className="studio-chat-user"><span className="studio-chat-avatar">YOU</span><div><span className="studio-caps">Your idea</span><p>{activeProject?.idea || "Idea saved with this project."}</p></div></div>
-                <div className="studio-chat-system"><span className="studio-system-avatar"><Activity size={18} /></span><div><span className="studio-caps">Research system</span><p>{snapshot.run.status === "integration_blocked" ? "The analysis cannot continue until a required provider or budget is configured." : reportReady ? "A report version is ready. Inspect the map and report, or ask a question grounded in the saved findings." : surveyPhase === "preparing" ? "Orit is preparing the participant survey and Terac study. Agent research waits for the first response." : surveyPhase === "approval" ? "Your Terac quote is ready for approval. The agent simulation will wait for the first completed response." : surveyPhase === "waiting" ? "The Tally survey is live through Terac. Agent research begins after the first completed response arrives." : surveyPhase === "started" ? "The first Terac response has arrived. Agent research is underway." : snapshot.run.status === "queued" ? "Your run is queued. Stages will appear here as they are saved." : "The analysis is underway. Every update below comes from a saved run event."}</p></div></div>
+                <div className="studio-chat-system"><span className="studio-system-avatar"><Activity size={18} /></span><div><span className="studio-caps">Research system</span><p>{snapshot.run.status === "integration_blocked" ? "The analysis cannot continue until a required provider or budget is configured." : reportReady ? "A report version is ready. Inspect the map and report, or ask a question grounded in the saved findings." : surveyPhase === "preparing" ? `Orit is preparing the Tally survey and a ${DEEP_PARTICIPANT_TARGET}-person Terac opportunity. Agent research waits for the first matched submission.` : surveyPhase === "approval" ? "Review the Terac opportunity's current total and materials, then approve it here. Agent research will wait for the first matched submission." : surveyPhase === "waiting" ? "The Tally survey is live through Terac. Agent research begins after the first matched submission arrives." : surveyPhase === "started" ? "The first Terac submission has arrived. Agent research is underway." : snapshot.run.status === "queued" ? "Your run is queued. Stages will appear here as they are saved." : "The analysis is underway. Every update below comes from a saved run event."}</p></div></div>
                 {snapshot.run.status === "integration_blocked" && <div className="studio-state-banner is-blocked"><strong>Integration blocked</strong><p>{runError(snapshot.run.error) || activeEvents.findLast((event) => event.kind === "integration_blocked")?.payload?.message?.toString() || "A required provider credential or budget is unavailable. Configure it and start a new analysis."}</p></div>}
                 {snapshot.run.status === "failed" && <div className="studio-state-banner is-failed"><strong>Run failed</strong><p>{runError(snapshot.run.error) || "The worker stopped before completing this run."}</p></div>}
                 {snapshot.run.status === "needs_input" && <div className="studio-state-banner is-input"><strong>More detail needed</strong>{clarificationQuestions.length > 0 ? <ul>{clarificationQuestions.map((question, index) => <li key={`${index}-${question}`}>{question}</li>)}</ul> : <p>{clarification?.payload?.message?.toString() || "Add the missing detail to continue."}</p>}</div>}
                 {activeEvents.length > 0 && <div className="studio-event-feed" aria-label="Saved run events">{activeEvents.map((event) => <button type="button" key={event.seq} className="studio-event" onClick={() => { setSelectedSeq(event.seq); showView("explore"); }}><span className={`studio-event-marker kind-${event.kind}`} /><span><small>{event.stage ? stageLabels[event.stage] ?? event.stage.replaceAll("_", " ") : "Run event"} · {new Date(event.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small><strong>{eventText(event)}</strong></span><ArrowRight size={15} /></button>)}</div>}
-                {snapshot.run.status === "awaiting_approval" && snapshot.study && <QuotePanel key={snapshot.study.approvalFingerprint ?? snapshot.study.id} study={snapshot.study} assetIds={Array.isArray((snapshot.run.input as { assetIds?: unknown } | undefined)?.assetIds) ? (snapshot.run.input as { assetIds: string[] }).assetIds : []} busy={approving} onApprove={(quoteId, amountUsd, fingerprint) => approveStudy(snapshot.study!.id, quoteId, amountUsd, fingerprint)} />}
+                {snapshot.run.status === "awaiting_approval" && snapshot.study && <OpportunityApprovalPanel key={snapshot.study.approvalFingerprint ?? snapshot.study.id} study={snapshot.study} assetIds={Array.isArray((snapshot.run.input as { assetIds?: unknown } | undefined)?.assetIds) ? (snapshot.run.input as { assetIds: string[] }).assetIds : []} busy={approving} refreshing={refreshing} onApprove={(quoteId, amountUsd, fingerprint) => approveStudy(snapshot.study!.id, quoteId, amountUsd, fingerprint)} onRefresh={() => refreshStudyPrice(snapshot.study!.id)} />}
                 {surveyPhase && surveyPhase !== "approval" && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}
                 {snapshot.run.status === "awaiting_humans" && reportReady && <div className="studio-state-banner is-waiting"><strong>Human feedback is in progress</strong><p>Your report is available now. A human-feedback addendum will appear after the remaining responses are reviewed.</p></div>}
                 {snapshot.run.mode === "deep_simulation" && reportContent?.metadata.humanStatus === "unavailable" && <div className="studio-state-banner is-waiting"><strong>Synthetic report complete</strong><p>Human feedback is unavailable in this local version. The Report tab shows the saved evidence and synthetic buyer results.</p></div>}
@@ -605,7 +642,7 @@ export default function Workspace() {
                   const version = citedReport(snapshot, message);
                   return <div key={message.id} className={`studio-chat-message is-${message.role}`}><span className="studio-caps">{message.role === "user" ? "You" : "Report answer"}</span><p>{message.content}</p>{message.role === "user" && message.idempotency_key === snapshot.run.idempotency_key && (runInputUrls.length > 0 || runInputImageIds.length > 0) && <div className="studio-chat-materials"><span>Research inputs for this run</span><div>{runInputUrls.map((url) => <a href={url} target="_blank" rel="noopener noreferrer" key={url}><Link2 size={13} />{new URL(url).hostname}</a>)}{runInputImageIds.map((id, index) => <a href={`/api/assets/${id}`} target="_blank" rel="noopener noreferrer" className="is-image" key={id}><Image unoptimized src={`/api/assets/${id}`} width={22} height={22} alt="" />Image {index + 1}</a>)}</div></div>}{message.role === "assistant" && <MessageCitations ids={message.citations} report={asReportContent(version)} reportVersion={version?.version ?? null} onOpenReport={openReportCitation} />}</div>;
                 })}
-              </div>{viewingOlderRun ? <div className="studio-followup studio-followup-archived"><p>This is a saved earlier run. Its answers and citations refer to the report shown here.</p><button type="button" onClick={() => openRun(projectRuns[0].id)}>Go to the latest run to ask a question <ArrowRight size={15} /></button></div> : !reportReady && snapshot.run.status !== "needs_input" ? <div className="studio-followup studio-followup-archived"><p>{snapshot.run.status === "integration_blocked" ? "Questions will be available after the required integration or budget is configured and a report is complete." : snapshot.run.status === "failed" ? "This run did not produce a report. Start a new analysis to try again." : surveyPhase === "waiting" ? "The chat opens for report questions after the first Terac response starts the agent simulation and the report is saved." : "Questions will be available as soon as the saved report is ready."}</p></div> : <Composer key={snapshot.run.id} kind="followup" onFollowup={sendMessage} busy={sending} initialMode={snapshot.run.mode} canAddResearch={reportReady} existingUrls={runInputUrls} existingImageCount={runInputImageIds.length} />}</div></div>
+              </div>{viewingOlderRun ? <div className="studio-followup studio-followup-archived"><p>This is a saved earlier run. Its answers and citations refer to the report shown here.</p><button type="button" onClick={() => openRun(projectRuns[0].id)}>Go to the latest run to ask a question <ArrowRight size={15} /></button></div> : !reportReady && snapshot.run.status !== "needs_input" ? <div className="studio-followup studio-followup-archived"><p>{snapshot.run.status === "integration_blocked" ? "Questions will be available after the required integration or budget is configured and a report is complete." : snapshot.run.status === "failed" ? "This run did not produce a report. Start a new analysis to try again." : surveyPhase === "waiting" ? "The chat opens for report questions after the first matched Terac submission starts agent research and the report is saved." : "Questions will be available as soon as the saved report is ready."}</p></div> : <Composer key={snapshot.run.id} kind="followup" onFollowup={sendMessage} busy={sending} initialMode={snapshot.run.mode} canAddResearch={reportReady} existingUrls={runInputUrls} existingImageCount={runInputImageIds.length} />}</div></div>
             </>}
           </div>}
         </section>
@@ -619,7 +656,7 @@ export default function Workspace() {
           : !snapshot ? <div className="studio-run-loading">No research run found.</div>
           : <>
             <details className="studio-research-progress"><summary>Run progress · {stages.filter((stage) => completedStages.has(stage)).length} of {stages.length} stages <span>{activeStatusLabel}</span></summary><ol className="studio-stage-list">{stages.map((stage, index) => <li key={stage} className={`${completedStages.has(stage) ? "is-done" : snapshot.run.stage === stage ? "is-current" : ""}`}><span className="studio-stage-number">{String(index + 1).padStart(2, "0")}</span><span>{stageLabels[stage]}</span><span className="studio-stage-symbol">{completedStages.has(stage) ? "✓" : snapshot.run.stage === stage ? "↗" : ""}</span></li>)}</ol><p>Progress is reconstructed from saved run events.</p></details>
-            {researchView === "explore" ? <div className="studio-explore-page"><div className="studio-explore-toolbar"><div><span className="studio-caps">Inspectable simulation</span><h2>{surveyPhase && surveyPhase !== "started" ? "The map begins after a human response." : "See how the conclusion formed."}</h2><p>{surveyPhase && surveyPhase !== "started" ? "The survey and first Terac response will unlock the research stages." : "Every node and connection comes from a saved research artifact."}</p></div>{(!surveyPhase || surveyPhase === "started") && <button type="button" onClick={() => setSelectedSeq(null)} className={selectedSeq === null ? "is-current" : ""}>Latest map <ArrowRight size={15} /></button>}</div>{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{(!surveyPhase || surveyPhase === "started") && <ExploreMap graph={graph} sources={mapSources} />}{(!surveyPhase || surveyPhase === "started") && <div className="studio-timeline"><div><span className="studio-caps">Run history</span><h3>Replay completed stages</h3></div><div className="studio-timeline-scroll"><button type="button" className={selectedSeq === null ? "is-active" : ""} onClick={() => setSelectedSeq(null)}><span>NOW</span><strong>Latest</strong></button>{timelineEntries.map(({ event, replaySeq }) => <button type="button" key={event.seq} className={selectedSeq === replaySeq ? "is-active" : ""} onClick={() => setSelectedSeq(replaySeq)}><span>{String(event.seq).padStart(2, "0")}</span><strong>{stageLabels[event.stage ?? ""] ?? event.stage}</strong></button>)}</div></div>}</div>
+            {researchView === "explore" ? <div className="studio-explore-page"><div className="studio-explore-toolbar"><div><span className="studio-caps">Inspectable simulation</span><h2>{surveyPhase && surveyPhase !== "started" ? "The map begins after a matched submission." : "See how the conclusion formed."}</h2><p>{surveyPhase && surveyPhase !== "started" ? "The survey and first matched Terac submission will unlock the research stages." : "Every node and connection comes from a saved research artifact."}</p></div>{(!surveyPhase || surveyPhase === "started") && <button type="button" onClick={() => setSelectedSeq(null)} className={selectedSeq === null ? "is-current" : ""}>Latest map <ArrowRight size={15} /></button>}</div>{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{(!surveyPhase || surveyPhase === "started") && <ExploreMap graph={graph} sources={mapSources} />}{(!surveyPhase || surveyPhase === "started") && <div className="studio-timeline"><div><span className="studio-caps">Run history</span><h3>Replay completed stages</h3></div><div className="studio-timeline-scroll"><button type="button" className={selectedSeq === null ? "is-active" : ""} onClick={() => setSelectedSeq(null)}><span>NOW</span><strong>Latest</strong></button>{timelineEntries.map(({ event, replaySeq }) => <button type="button" key={event.seq} className={selectedSeq === replaySeq ? "is-active" : ""} onClick={() => setSelectedSeq(replaySeq)}><span>{String(event.seq).padStart(2, "0")}</span><strong>{stageLabels[event.stage ?? ""] ?? event.stage}</strong></button>)}</div></div>}</div>
             : <div className="studio-report-page">{(snapshot.reports?.length ?? 0) > 1 && <div className="studio-report-versions"><span className="studio-caps">Report history</span><div>{snapshot.reports!.map((report) => <button type="button" key={report.id} className={(visibleReport?.version ?? 0) === report.version ? "is-active" : ""} onClick={() => setSelectedReportVersion(report.version)}>v{report.version} · {report.kind === "human_addendum" ? "Human addendum" : "Synthetic report"}</button>)}</div></div>}{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{surveyPhase && surveyPhase !== "started" ? null : <ReportView report={visibleReport} runId={snapshot.run.id} />}{snapshot.study && reportReady && snapshot.run.status !== "awaiting_approval" && <StudyReview studyId={snapshot.study.id} onReview={() => { announceWorkspaceUpdate(); return loadRun(snapshot.run.id); }} />}</div>}
           </>}
         </section>

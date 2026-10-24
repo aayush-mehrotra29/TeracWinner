@@ -3,7 +3,7 @@ import test from "node:test";
 import type { ResearchModels } from "../../src/lib/research/models";
 import type { ResearchStore } from "../../src/lib/research/store";
 import { IntegrationBlockedError } from "../../src/lib/providers/errors";
-import { draftTotalUsd, getProviderSubmissions, humanAddendumDecision, prepareDeepStudy, savedAddendumMatches } from "../../src/lib/research/deep";
+import { draftTotalUsd, getProviderSubmissions, humanAddendumDecision, prepareDeepStudy, savedAddendumMatches, validateDraft } from "../../src/lib/research/deep";
 import { observeImages } from "../../src/lib/research/images";
 import type { RunRow } from "../../src/lib/research/types";
 
@@ -40,10 +40,10 @@ test("credential or budget blocks during image analysis stop the run", async () 
 });
 
 test("human addendum stays pending, then publishes on target or closed fieldwork, including late review", () => {
-  assert.equal(humanAddendumDecision("launched", 3, 12, "active"), "pending");
-  assert.equal(humanAddendumDecision("launched", 12, 12, "active"), "publish");
-  assert.equal(humanAddendumDecision("launched", 3, 12, "completed"), "publish");
-  assert.equal(humanAddendumDecision("completed", 4, 12, "completed"), "publish");
+  assert.equal(humanAddendumDecision("launched", 1, 5, "active"), "pending");
+  assert.equal(humanAddendumDecision("launched", 5, 5, "active"), "publish");
+  assert.equal(humanAddendumDecision("launched", 1, 5, "completed"), "publish");
+  assert.equal(humanAddendumDecision("completed", 4, 5, "completed"), "publish");
 });
 
 test("saved human addendum fingerprint allows a crash retry to reuse its report version", () => {
@@ -58,6 +58,22 @@ test("fresh Terac draft price is read from current opportunity pricing", () => {
   assert.equal(draftTotalUsd({ opportunity: { pricing: { total_cost_cents: 1250 } } }), 12.5);
   assert.equal(draftTotalUsd({ data: { pricing: { total_cost_cents: "75000" } } }), null);
   assert.equal(draftTotalUsd({ data: { pricing: {} } }), null);
+});
+
+test("direct opportunity requires five participants and records Terac's all-in total", () => {
+  const draft = {
+    id: "opportunity-1", projectId: "project-1", internalTitle: "Orit run run-1",
+    status: "draft", participantCount: 5, allInCostPerParticipantUsd: 42,
+    totalUsd: 210, draftEditorUrl: "https://terac.com/draft/opportunity-1", raw: { id: "opportunity-1" },
+  };
+  const quote = validateDraft(draft);
+  assert.equal(quote.amountUsd, 210);
+  assert.equal(quote.costPerParticipantUsd, 42);
+  assert.equal("requestedIncentiveUsd" in quote, false);
+  assert.equal(quote.id, "opportunity-1");
+  assert.throws(() => validateDraft({ ...draft, participantCount: 6 }), IntegrationBlockedError);
+  assert.throws(() => validateDraft({ ...draft, participantCount: null }), IntegrationBlockedError);
+  assert.throws(() => validateDraft({ ...draft, totalUsd: null }), IntegrationBlockedError);
 });
 
 test("sandbox test participants cannot unlock the first real response gate", () => {

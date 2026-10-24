@@ -21,6 +21,7 @@ export type ResearchStage =
   | "synthesis"
   | "review"
   | "report"
+  | "terac_opportunity"
   | "terac_feasibility"
   | "terac_fieldwork"
   | "human_addendum";

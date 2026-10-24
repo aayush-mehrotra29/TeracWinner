@@ -1,6 +1,7 @@
 import { IntegrationBlockedError, ProviderError } from "../providers/errors";
 import { TallyMcp, type TallyQuestion, type TallySubmissionPage } from "../providers/tally";
 import { ResearchStore } from "./store";
+import { DEEP_PARTICIPANT_TARGET } from "./deep-config";
 import type { RunRow } from "./types";
 
 const IMAGE_LINK_SECONDS = 30 * 24 * 60 * 60;
@@ -21,6 +22,7 @@ export interface TallyStudyMaterials {
   screeningQuestions: Array<{ key: string; text: string; pick: string; answers: Array<{ text: string; qualify_logic: string }> }>;
   tallyFormId?: string;
   tallyUrl?: string;
+  draftEditorUrl?: string;
   tallyHiddenSubmissionFieldId?: string;
   imageUrls?: string[];
   imageExpiresAt?: string;
@@ -235,7 +237,7 @@ export async function ensureDeepStudyForm(store: ResearchStore, run: RunRow, cli
       ? materials.imageUrls : await signedImageUrls(store, run, materials.assetIds);
     if (!study) {
       const { data, error } = await store.db.from("human_studies").insert({
-        run_id: run.id, owner_id: run.owner_id, status: "creating_form", target_count: 12,
+        run_id: run.id, owner_id: run.owner_id, status: "creating_form", target_count: DEEP_PARTICIPANT_TARGET,
         quote: null, materials, provider_id: null, response_token_hash: null,
       }).select("*").single();
       if (error || !data) {

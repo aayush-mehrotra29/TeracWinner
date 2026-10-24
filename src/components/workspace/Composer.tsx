@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { ArrowLeft, ArrowUp, Check, ChevronDown, ImagePlus, Link2, Plus, SlidersHorizontal, X } from "lucide-react";
+import { DEEP_PARTICIPANT_TARGET } from "@/lib/research/deep-config";
 import type { ResearchMode } from "./types";
 
 export type StartInput = {
@@ -26,7 +27,7 @@ type Panel = "add" | "source" | "context" | "model" | null;
 const modes: { id: ResearchMode; title: string; description: string }[] = [
   { id: "light_research", title: "Light research", description: "Evidence, competitors, pricing, and objections." },
   { id: "light_simulation", title: "Light simulation", description: "Research plus eight synthetic buying contexts." },
-  { id: "deep_simulation", title: "Deep simulation", description: "Terac survey first. Agent simulation starts after a matched response." },
+  { id: "deep_simulation", title: "Deep simulation", description: `${DEEP_PARTICIPANT_TARGET}-person Terac opportunity. Review its price before launch; agents start after one matched response.` },
 ];
 
 export default function Composer(props: ComposerProps) {
@@ -212,7 +213,7 @@ export default function Composer(props: ComposerProps) {
       <span className="studio-composer-panel-kicker">RESEARCH MODEL</span>
       <div className="studio-model-identity"><strong>Orit Research</strong><small>GPT-6 Luna extracts and evaluates. GPT-6.1 Sol plans, synthesizes, and reviews.</small></div>
       <fieldset className="studio-effort-options"><legend className="studio-composer-panel-kicker">EFFORT</legend>{modes.map((item) => <label key={item.id} className={mode === item.id ? "is-active" : ""}><input type="radio" name="research-mode" value={item.id} checked={mode === item.id} onChange={() => { setMode(item.id); setPanel(item.id === "deep_simulation" && !isFollowup && !audience.trim() ? "context" : null); }} /><span><strong>{item.title}</strong><small>{item.description}</small></span>{mode === item.id && <Check size={16} />}</label>)}</fieldset>
-      {mode === "deep_simulation" && <p className="studio-approval-note">Orit creates a Tally survey for a Terac study. A paid launch needs your approval; synthetic agents wait for one matched participant response.</p>}
+      {mode === "deep_simulation" && <p className="studio-approval-note">Orit prepares a Tally survey and a Terac opportunity for up to {DEEP_PARTICIPANT_TARGET} participants. Review Terac&apos;s actual total and the materials before approving launch. Agent research begins after the first matched submission.</p>}
     </div>}
 
     {error && <p className="studio-form-error" role="alert">{error}</p>}

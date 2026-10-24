@@ -27,6 +27,77 @@ function pick(object: Record<string, unknown>, ...keys: string[]): unknown {
   return undefined;
 }
 
+export interface TeracOpportunityDetails {
+  id: string | null;
+  projectId: string | null;
+  internalTitle: string | null;
+  status: string | null;
+  participantCount: number | null;
+  /** Terac's all-in cost, including its platform fee; this is not the expert's payout. */
+  allInCostPerParticipantUsd: number | null;
+  totalUsd: number | null;
+  draftEditorUrl: string | null;
+}
+
+/** Read documented opportunity fields without treating all-in CPI as participant pay. */
+export function parseTeracOpportunity(raw: Record<string, unknown>): TeracOpportunityDetails {
+  const data = asRecord(raw.data);
+  const result = asRecord(raw.result);
+  const rows = [asRecord(data.opportunity), asRecord(result.opportunity), asRecord(raw.opportunity), data, result, raw];
+  const value = (...keys: string[]): unknown => {
+    for (const row of rows) for (const key of keys) if (row[key] !== undefined) return row[key];
+    return undefined;
+  };
+  const money = (centsKeys: string[], dollarKeys: string[]): number | null => {
+    for (const row of rows) {
+      const pricing = asRecord(row.pricing);
+      for (const source of [pricing, row]) {
+        for (const key of centsKeys) {
+          const cents = source[key];
+          if (typeof cents === "number" && Number.isInteger(cents) && cents >= 0) return cents / 100;
+        }
+        for (const key of dollarKeys) {
+          const dollars = source[key];
+          if (typeof dollars === "number" && Number.isFinite(dollars) && dollars >= 0) return dollars;
+        }
+      }
+    }
+    return null;
+  };
+  const id = value("id", "opportunityId", "opportunity_id");
+  const projectId = value("project_id", "projectId");
+  const internalTitle = value("internal_title", "internalTitle");
+  const status = value("status");
+  const count = value("num_participants", "numParticipants");
+  let draftEditorUrl: string | null = null;
+  for (const row of rows) {
+    const dashboard = asRecord(asRecord(row.links).dashboard);
+    const candidate = dashboard.draft_editor ?? dashboard.draftEditor;
+    if (typeof candidate === "string") {
+      try {
+        const url = new URL(candidate);
+        if (url.protocol === "https:" && (url.hostname === "terac.com" || url.hostname.endsWith(".terac.com"))) {
+          draftEditorUrl = url.toString();
+          break;
+        }
+      } catch { /* Ignore malformed provider links. */ }
+    }
+  }
+  return {
+    id: typeof id === "string" && id.length > 0 ? id : null,
+    projectId: typeof projectId === "string" && projectId.length > 0 ? projectId : null,
+    internalTitle: typeof internalTitle === "string" && internalTitle.length > 0 ? internalTitle : null,
+    status: typeof status === "string" && status.length > 0 ? status : null,
+    participantCount: typeof count === "number" && Number.isInteger(count) && count >= 1 ? count : null,
+    allInCostPerParticipantUsd: money(
+      ["cost_per_participant_cents", "costPerParticipantCents"],
+      ["cost_per_participant_usd", "costPerParticipantUsd"],
+    ),
+    totalUsd: money(["total_cost_cents", "totalCostCents"], ["total_usd", "totalUsd", "total"]),
+    draftEditorUrl,
+  };
+}
+
 function toolArguments(tool: Tool, values: Record<string, unknown>): Record<string, unknown> {
   const properties = tool.inputSchema?.properties ?? {};
   const result: Record<string, unknown> = {};
@@ -107,16 +178,18 @@ export class TeracMcp {
   }
 
   async createOpportunity(args: {
-    title: string; description: string; taskUrl: string; audience: string;
-    feasibilityId: string; count: number; projectId?: string; businessType: "b2b" | "b2c";
+    title: string; internalTitle?: string; description: string; taskUrl: string; audience: string;
+    feasibilityId?: string; count: number; projectId?: string; businessType: "b2b" | "b2c";
     screeningQuestions: Array<{ key: string; text: string; pick: string; answers: Array<{ text: string; qualify_logic: string }> }>;
-  }): Promise<{ id: string; totalUsd: number | null; raw: Record<string, unknown> }> {
+  }): Promise<TeracOpportunityDetails & { id: string; raw: Record<string, unknown> }> {
     const task = {
       sequence: 1, task_type: "interview", review_type: "manual_review", task_url: args.taskUrl,
       title: "Written product feedback", description: "Answer the written questions on the linked page.", duration_minutes: 15,
     };
     const raw = await this.call("terac_create_opportunity", {
       title: args.title,
+      internalTitle: args.internalTitle,
+      internal_title: args.internalTitle,
       description: args.description,
       projectId: args.projectId,
       project_id: args.projectId,
@@ -126,18 +199,73 @@ export class TeracMcp {
       business_type: args.businessType,
       expectedDaysToComplete: 7,
       expected_days_to_complete: 7,
-      feasibilityRequestId: args.feasibilityId,
-      feasibility_request_id: args.feasibilityId,
+      ...(args.feasibilityId ? {
+        feasibilityRequestId: args.feasibilityId,
+        feasibility_request_id: args.feasibilityId,
+      } : {}),
       tasks: [task],
       filters: [{ "multi_select--country": { "$in": ["US"] } }],
       screeningQuestions: args.screeningQuestions,
       screening_questions: args.screeningQuestions,
     });
-    const id = pick(raw, "id", "opportunityId", "opportunity_id");
-    if (typeof id !== "string") throw new ProviderError("Terac draft response lacked opportunity ID", "terac");
-    const totalCents = pick(raw, "total_cost_cents", "totalCostCents");
-    const total = pick(raw, "total", "totalUsd", "total_usd");
-    return { id, totalUsd: totalCents !== undefined && totalCents !== null ? Number(totalCents) / 100 : total === undefined || total === null ? null : Number(total), raw };
+    const details = parseTeracOpportunity(raw);
+    if (!details.id) throw new ProviderError("Terac draft response lacked opportunity ID", "terac");
+    return { ...details, id: details.id, raw };
+  }
+
+  /** Reconcile an uncertain draft creation by exact internal title, scoped to one project. */
+  async findDraftOpportunityByInternalTitle(
+    internalTitle: string, projectId: string,
+  ): Promise<(TeracOpportunityDetails & { id: string; raw: Record<string, unknown> }) | null> {
+    if (!internalTitle || !projectId) throw new IntegrationBlockedError("Terac draft recovery needs internal title and project ID", "terac");
+    // A timed-out create may still be completing remotely. Read a few times
+    // before declaring the write uncertain; never issue a second create here.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const found = await this.scanDraftOpportunities(internalTitle, projectId);
+      if (found) return found;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    return null;
+  }
+
+  private async scanDraftOpportunities(
+    internalTitle: string, projectId: string,
+  ): Promise<(TeracOpportunityDetails & { id: string; raw: Record<string, unknown> }) | null> {
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    let found: (TeracOpportunityDetails & { id: string; raw: Record<string, unknown> }) | null = null;
+    for (let page = 0; page < 5; page += 1) {
+      const raw = await this.call("terac_list_opportunities", { projectId, status: "draft", limit: 100, cursor });
+      const data = asRecord(raw.data);
+      const result = asRecord(raw.result);
+      const rows = Array.isArray(raw.data) ? raw.data
+        : data.opportunities ?? data.data ?? raw.opportunities ?? result.opportunities ?? result.data;
+      if (!Array.isArray(rows)) throw new ProviderError("Terac draft listing has no opportunity list", "terac");
+      for (const item of rows) {
+        const summary = asRecord(item);
+        const id = summary.id ?? summary.opportunity_id ?? summary.opportunityId;
+        if (typeof id !== "string" || !id) throw new ProviderError("Terac draft listing has an opportunity without ID", "terac");
+        const summaryTitle = summary.internal_title ?? summary.internalTitle;
+        if (typeof summaryTitle === "string" && summaryTitle !== internalTitle) continue;
+        const full = await this.getOpportunity(id);
+        const details = parseTeracOpportunity(full);
+        if (details.id !== id || !details.projectId || details.projectId !== projectId) {
+          throw new IntegrationBlockedError("Terac draft recovery found an inconsistent project or opportunity ID", "terac");
+        }
+        if (details.internalTitle !== internalTitle) continue;
+        if (found) throw new IntegrationBlockedError("Multiple Terac drafts share the recovery title; reconcile them manually", "terac");
+        found = { ...details, id, raw: full };
+      }
+      const pagination = asRecord(raw.pagination ?? data.pagination ?? result.pagination);
+      if (pagination.has_more !== true && pagination.hasMore !== true) return found;
+      const next = pagination.next_cursor ?? pagination.nextCursor;
+      if (typeof next !== "string" || !next || seenCursors.has(next)) {
+        throw new IntegrationBlockedError("Terac draft listing pagination needs manual reconciliation", "terac");
+      }
+      seenCursors.add(next);
+      cursor = next;
+    }
+    throw new IntegrationBlockedError("Terac draft recovery exceeded its safe search window", "terac");
   }
 
   async launchDraft(opportunityId: string): Promise<Record<string, unknown>> {

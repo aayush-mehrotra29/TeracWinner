@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { approvalFingerprint } from "../api/study";
 import { IntegrationBlockedError } from "../providers/errors";
-import { TeracMcp } from "../providers/terac";
+import { parseTeracOpportunity, TeracMcp, type TeracOpportunityDetails } from "../providers/terac";
+import { DEEP_PARTICIPANT_TARGET } from "./deep-config";
 import { TERAC_FIELDWORK_AVAILABLE, TERAC_FIELDWORK_UNAVAILABLE_REASON } from "./fieldwork";
 import { ResearchModels } from "./models";
 import { schemas } from "./schemas";
@@ -32,18 +32,9 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-/** Read the live draft's current charge, never an old feasibility quote. */
+/** Read the live opportunity's all-in charge, not the expert's payout. */
 export function draftTotalUsd(raw: Record<string, unknown>): number | null {
-  const data = asRecord(raw.data);
-  const rows = [asRecord(data.opportunity), data, asRecord(raw.opportunity), raw];
-  for (const row of rows) {
-    const pricing = asRecord(row.pricing);
-    const cents = pricing.total_cost_cents ?? pricing.totalCostCents ?? row.total_cost_cents ?? row.totalCostCents;
-    if (typeof cents === "number" && Number.isInteger(cents) && cents > 0) return cents / 100;
-    const dollars = pricing.total_usd ?? pricing.totalUsd ?? row.total_usd ?? row.totalUsd;
-    if (typeof dollars === "number" && Number.isFinite(dollars) && dollars > 0) return dollars;
-  }
-  return null;
+  return parseTeracOpportunity(raw).totalUsd;
 }
 
 function opportunityStatus(raw: Record<string, unknown>): string {
@@ -94,130 +85,124 @@ async function updateStudy(store: ResearchStore, study: HumanStudyRow, changes: 
   Object.assign(study, changes);
 }
 
-async function initiateStudy(store: ResearchStore, run: RunRow, study: HumanStudyRow, terac: TeracMcp): Promise<void> {
-  await updateStudy(store, study, { status: "requesting_feasibility" });
-  const materials = study.materials;
-  const requested = await terac.requestFeasibility({
-    audience: materials.panelDescription,
-    task: materials.taskDescription,
-    count: study.target_count,
-  });
-  const quote: Quote = { id: requested.id, amountUsd: null, currency: "USD", costPerParticipantUsd: null, status: requested.status, providerResponse: requested.raw };
-  await updateStudy(store, study, { quote, status: "feasibility_pending" });
-  await store.eventOnce(run, "terac_quote", "terac_feasibility", { status: "pending", targetCount: study.target_count });
+export function validateDraft(draft: TeracOpportunityDetails & { id: string; raw: Record<string, unknown> }): Quote {
+  if (draft.participantCount !== DEEP_PARTICIPANT_TARGET) {
+    throw new IntegrationBlockedError(`Terac opportunity must be capped at ${DEEP_PARTICIPANT_TARGET} participants; the provider reported ${draft.participantCount ?? "no count"}`, "terac");
+  }
+  if (draft.totalUsd === null || !Number.isFinite(draft.totalUsd) || draft.totalUsd <= 0) {
+    throw new IntegrationBlockedError("Terac draft has no all-in total; review its price in Terac before launch", "terac");
+  }
+  if (draft.status && !["draft", "ready", "draft_ready"].includes(draft.status.toLowerCase())) {
+    throw new IntegrationBlockedError(`Terac opportunity status ${draft.status} needs manual reconciliation before approval`, "terac");
+  }
+  return {
+    id: draft.id,
+    amountUsd: draft.totalUsd,
+    currency: "USD",
+    costPerParticipantUsd: draft.allInCostPerParticipantUsd ?? Math.round(draft.totalUsd / DEEP_PARTICIPANT_TARGET * 100) / 100,
+    status: "DRAFT",
+    providerResponse: draft.raw,
+  };
 }
 
-async function pollFeasibility(store: ResearchStore, run: RunRow, study: HumanStudyRow, terac: TeracMcp): Promise<void> {
-  if (!study.quote?.id) throw new IntegrationBlockedError("Terac feasibility request needs manual reconciliation", "terac");
-  const current = await terac.getFeasibility(study.quote.id);
-  if (current.status === "RESPONDED" && Number.isFinite(current.costPerParticipant) && (current.costPerParticipant ?? 0) > 0) {
-    const cost = current.costPerParticipant!;
-    const quote: Quote = {
-      id: study.quote.id, amountUsd: Math.round(cost * study.target_count * 100) / 100,
-      currency: "USD", costPerParticipantUsd: cost, status: "RESPONDED", providerResponse: current.raw,
-    };
-    await updateStudy(store, study, { quote, status: "needs_approval" });
-    await store.finish(run, "awaiting_approval", "terac_feasibility");
-    await store.event(run, "terac_quote", "terac_feasibility", { status: "priced", quote, approvalRequired: true });
-    return;
+async function createOpportunityDraft(store: ResearchStore, run: RunRow, study: HumanStudyRow, terac: TeracMcp): Promise<void> {
+  let projectId = await store.artifact<string>(run.id, "terac", "project_id");
+  if (!projectId) {
+    const project = await terac.createProject(study.materials.title);
+    projectId = project.id;
+    await store.saveArtifact(run, "terac", "project_id", projectId);
   }
-  if (["LOST", "NOT_PURSUED"].includes(current.status)) throw new IntegrationBlockedError(`Terac feasibility ended as ${current.status}`, "terac");
-  await store.finish(run, "awaiting_humans", "terac_feasibility");
-}
-
-async function launchApproved(store: ResearchStore, run: RunRow, study: HumanStudyRow, terac: TeracMcp): Promise<void> {
-  if (!study.quote || study.quote.status !== "RESPONDED" || !study.quote.amountUsd || !study.approved_fingerprint ||
-      approvalFingerprint(study.quote, study.materials) !== study.approved_fingerprint) {
-    throw new IntegrationBlockedError("Terac quote or shared materials changed after owner approval", "terac");
+  const internalTitle = `Orit run ${run.id}`;
+  const recovering = study.status === "creating_opportunity";
+  const startedKey = "draft_creation_started_at";
+  let startedAt = await store.artifact<string>(run.id, "terac", startedKey);
+  if (!startedAt) {
+    startedAt = new Date().toISOString();
+    await store.saveArtifact(run, "terac", startedKey, startedAt);
   }
-  let opportunityId = study.provider_id;
-  if (!opportunityId) {
-    let projectId = await store.artifact<string>(run.id, "terac", "project_id");
-    if (!projectId) {
-      const project = await terac.createProject(study.materials.title);
-      projectId = project.id;
-      await store.saveArtifact(run, "terac", "project_id", projectId);
+  // A timed-out create can succeed remotely minutes later. Search the exact
+  // draft in the saved project and never issue a second create on uncertainty.
+  const draft = recovering
+    ? await terac.findDraftOpportunityByInternalTitle(internalTitle, projectId)
+    : null;
+  if (recovering && !draft) {
+    if (Date.now() - Date.parse(startedAt) > 15 * 60_000) {
+      throw new IntegrationBlockedError("Terac draft creation remains uncertain after 15 minutes; reconcile it in Terac before retrying", "terac");
     }
-    const draft = await terac.createOpportunity({
-      title: study.materials.title,
-      description: study.materials.description,
-      audience: study.materials.audience,
-      businessType: study.materials.businessType,
-      taskUrl: study.materials.taskUrl,
-      feasibilityId: study.quote.id,
-      count: study.target_count,
-      projectId,
-      screeningQuestions: study.materials.screeningQuestions,
-    });
-    if (draft.totalUsd === null || !Number.isFinite(draft.totalUsd) || draft.totalUsd <= 0) {
-      await updateStudy(store, study, { provider_id: draft.id, status: "price_mismatch" });
-      throw new IntegrationBlockedError("Terac draft price is unavailable; the draft needs manual reconciliation", "terac");
-    }
-    if (Math.abs(draft.totalUsd - study.quote.amountUsd) > 0.01) {
-      const revisedQuote: Quote = {
-        ...study.quote, amountUsd: draft.totalUsd,
-        costPerParticipantUsd: Math.round(draft.totalUsd / study.target_count * 100) / 100,
-        providerResponse: { feasibility: study.quote.providerResponse, draft: draft.raw },
-      };
-      await updateStudy(store, study, {
-        provider_id: draft.id, quote: revisedQuote, status: "needs_approval",
-        approved_fingerprint: null, approval_at: null,
-      });
-      await store.finish(run, "awaiting_approval", "terac_feasibility");
-      await store.event(run, "terac_quote", "terac_feasibility", { status: "repriced", quote: revisedQuote, approvalRequired: true });
-      return;
-    }
-    opportunityId = draft.id;
-    await updateStudy(store, study, { provider_id: opportunityId, status: "draft_ready" });
-  }
-  // Terac has no atomic conditional launch/cost cap. Re-read the draft as close
-  // as possible to launch and require a new owner approval if its total moved.
-  const freshDraft = await terac.getOpportunity(opportunityId);
-  const freshTotal = draftTotalUsd(freshDraft);
-  if (freshTotal === null) {
-    throw new IntegrationBlockedError("Terac draft has no current total; launch needs manual reconciliation", "terac");
-  }
-  if (Math.round(freshTotal * 100) !== Math.round(study.quote.amountUsd * 100)) {
-    const revisedQuote: Quote = {
-      ...study.quote, amountUsd: freshTotal,
-      costPerParticipantUsd: Math.round(freshTotal / study.target_count * 100) / 100,
-      providerResponse: { feasibility: study.quote.providerResponse, currentDraft: freshDraft },
-    };
-    await updateStudy(store, study, {
-      quote: revisedQuote, status: "needs_approval", approved_fingerprint: null, approval_at: null,
-    });
-    await store.finish(run, "awaiting_approval", "terac_feasibility");
-    await store.event(run, "terac_quote", "terac_feasibility", {
-      status: "repriced", quote: revisedQuote, approvalRequired: true,
+    await store.finish(run, "awaiting_humans", "terac_opportunity");
+    await store.eventOnce(run, "terac_draft_reconciling", "terac_opportunity", {
+      projectId, targetCount: DEEP_PARTICIPANT_TARGET,
     });
     return;
   }
-  const draftStatus = opportunityStatus(freshDraft);
-  if (draftStatus && !["draft", "ready", "draft_ready"].includes(draftStatus)) {
-    throw new IntegrationBlockedError(`Terac draft status ${draftStatus} needs reconciliation before launch`, "terac");
-  }
-  await updateStudy(store, study, { status: "launching" });
-  await terac.launchDraft(opportunityId);
-  await updateStudy(store, study, { status: "awaiting_response", launched_at: new Date().toISOString() });
-  await store.finish(run, "awaiting_humans", "terac_fieldwork");
-  await store.eventOnce(run, "terac_launched", "terac_fieldwork", {
-    opportunityId, targetCount: study.target_count, tallyUrl: study.materials.tallyUrl,
+  if (!recovering) await updateStudy(store, study, { status: "creating_opportunity" });
+  const created = draft ?? await terac.createOpportunity({
+    title: study.materials.title,
+    internalTitle,
+    description: study.materials.description,
+    audience: study.materials.audience,
+    businessType: study.materials.businessType,
+    taskUrl: study.materials.taskUrl,
+    count: DEEP_PARTICIPANT_TARGET,
+    projectId,
+    screeningQuestions: study.materials.screeningQuestions,
+  });
+  const quote = validateDraft(created);
+  const materials = { ...study.materials, ...(created.draftEditorUrl ? { draftEditorUrl: created.draftEditorUrl } : {}) };
+  await updateStudy(store, study, {
+    provider_id: created.id,
+    quote,
+    materials,
+    target_count: DEEP_PARTICIPANT_TARGET,
+    status: "needs_approval",
+    approved_fingerprint: null,
+    approval_at: null,
+  });
+  await store.finish(run, "awaiting_approval", "terac_opportunity");
+  await store.eventOnce(run, "terac_draft_created", "terac_opportunity", {
+    opportunityId: created.id,
+    targetCount: DEEP_PARTICIPANT_TARGET,
+    allInTotalUsd: quote.amountUsd,
+    tallyUrl: study.materials.tallyUrl,
+    approvalRequired: true,
   });
 }
 
+const launchedOpportunityStates = new Set([
+  "pre_recruiting", "active", "paused", "fulfilled", "completed",
+  "launched", "published", "recruiting", "in_progress",
+]);
+
+/** A timed-out MCP launch may have succeeded; this path never sends launch again. */
 async function reconcileLaunching(store: ResearchStore, run: RunRow, study: HumanStudyRow, terac: TeracMcp): Promise<void> {
-  if (!study.provider_id) throw new IntegrationBlockedError("Terac launch needs manual reconciliation: no opportunity ID", "terac");
-  const current = await terac.getOpportunity(study.provider_id);
-  const status = opportunityStatus(current);
-  if (["launched", "active", "published", "recruiting", "in_progress"].includes(status)) {
+  if (!study.provider_id || !study.quote || study.quote.id !== study.provider_id || !study.quote.amountUsd) {
+    throw new IntegrationBlockedError("Terac launch has no saved opportunity ID or approved cost", "terac");
+  }
+  const current = parseTeracOpportunity(await terac.getOpportunity(study.provider_id));
+  if (current.id !== study.provider_id || current.participantCount !== DEEP_PARTICIPANT_TARGET ||
+      current.totalUsd === null || Math.round(current.totalUsd * 100) !== Math.round(study.quote.amountUsd * 100)) {
+    throw new IntegrationBlockedError("Terac launch count or cost differs from the approved five-person opportunity", "terac");
+  }
+  const status = current.status?.toLowerCase() ?? "";
+  if (launchedOpportunityStates.has(status)) {
     await updateStudy(store, study, { status: "awaiting_response", launched_at: study.launched_at ?? new Date().toISOString() });
     await store.finish(run, "awaiting_humans", "terac_fieldwork");
     await store.eventOnce(run, "terac_launched", "terac_fieldwork", {
-      opportunityId: study.provider_id, targetCount: study.target_count, tallyUrl: study.materials.tallyUrl,
+      opportunityId: study.provider_id, targetCount: DEEP_PARTICIPANT_TARGET,
+      allInTotalUsd: study.quote.amountUsd, tallyUrl: study.materials.tallyUrl,
     });
     return;
   }
-  throw new IntegrationBlockedError(`Terac launch state ${status || "unknown"} needs manual reconciliation; no second paid launch was attempted`, "terac");
+  if (["draft", "ready", "draft_ready"].includes(status)) {
+    const startedAt = study.approval_at ? Date.parse(study.approval_at) : NaN;
+    if (Number.isFinite(startedAt) && Date.now() - startedAt > 15 * 60_000) {
+      throw new IntegrationBlockedError("Terac still shows a draft 15 minutes after launch was requested; reconcile it before retrying", "terac");
+    }
+    await store.finish(run, "awaiting_humans", "terac_fieldwork");
+    await store.eventOnce(run, "terac_launch_reconciling", "terac_fieldwork", { opportunityId: study.provider_id });
+    return;
+  }
+  throw new IntegrationBlockedError(`Terac opportunity status ${status || "unknown"} needs launch reconciliation`, "terac");
 }
 
 const activeTeracStatuses = new Set(["in_progress", "work_review", "awaiting_review", "submitted", "completed", "approved"]);
@@ -383,29 +368,29 @@ export async function prepareDeepStudy(store: ResearchStore, run: RunRow): Promi
     if (study.status === "creating_form") {
       throw new IntegrationBlockedError("Tally form creation needs reconciliation before retry", "tally");
     }
-    if (study.status === "awaiting_response" && !study.quote && !study.provider_id) {
-      await store.transition(run, "terac_feasibility", "request", {
-        studyId: study.id, tallyFormId: study.materials.tallyFormId, targetCount: study.target_count,
-      }, () => initiateStudy(store, run, study, terac));
-      await store.finish(run, "awaiting_humans", "terac_feasibility");
-      return false;
+    if (["requesting_feasibility", "feasibility_pending", "needs_approval", "approved"].includes(study.status) &&
+        !study.provider_id) {
+      // A feasibility request creates no paid opportunity. Supersede the old
+      // unlaunched path and keep its Tally form for this run.
+      await updateStudy(store, study, {
+        status: "awaiting_response", quote: null, target_count: DEEP_PARTICIPANT_TARGET,
+        approved_fingerprint: null, approval_at: null,
+      });
+      await store.eventOnce(run, "terac_feasibility_superseded", "terac_opportunity", {
+        targetCount: DEEP_PARTICIPANT_TARGET,
+      });
     }
-    if (study.status === "requesting_feasibility") {
-      throw new IntegrationBlockedError("Terac feasibility request needs manual reconciliation before retry", "terac");
+    if (study.provider_id && study.target_count !== DEEP_PARTICIPANT_TARGET) {
+      throw new IntegrationBlockedError("Existing Terac opportunity exceeds the five-person cap; reconcile it in Terac before continuing", "terac");
     }
-    if (study.status === "feasibility_pending") {
-      await store.transition(run, "terac_feasibility", "poll", { studyId: study.id, quoteId: study.quote?.id },
-        () => pollFeasibility(store, run, study, terac));
+    if ((study.status === "awaiting_response" && !study.provider_id) || study.status === "creating_opportunity") {
+      await store.transition(run, "terac_opportunity", study.status === "creating_opportunity" ? "reconcile_draft" : "create_draft", {
+        studyId: study.id, tallyFormId: study.materials.tallyFormId, targetCount: DEEP_PARTICIPANT_TARGET,
+      }, () => createOpportunityDraft(store, run, study, terac));
       return false;
     }
     if (study.status === "needs_approval") {
-      await store.finish(run, "awaiting_approval", "terac_feasibility");
-      return false;
-    }
-    if (study.status === "approved" || study.status === "draft_ready") {
-      await store.transition(run, "terac_fieldwork", "launch", {
-        studyId: study.id, quote: study.quote, materials: study.materials,
-      }, () => launchApproved(store, run, study, terac));
+      await store.finish(run, "awaiting_approval", "terac_opportunity");
       return false;
     }
     if (study.status === "launching") {
@@ -413,6 +398,9 @@ export async function prepareDeepStudy(store: ResearchStore, run: RunRow): Promi
         studyId: study.id, providerId: study.provider_id,
       }, () => reconcileLaunching(store, run, study, terac));
       return false;
+    }
+    if (["approved", "draft_ready"].includes(study.status)) {
+      throw new IntegrationBlockedError("Existing Terac launch state needs manual reconciliation; Orit did not launch a paid opportunity", "terac");
     }
     if (["awaiting_response", "launched", "collecting", "recruiting", "completed"].includes(study.status) && study.provider_id) {
       const { confirmed } = await store.transition(run, "terac_fieldwork", "first_response_poll", {

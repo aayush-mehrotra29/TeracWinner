@@ -6,7 +6,7 @@ A chat-first product research application. Describe one product decision, add up
 | --- | --- |
 | Light research | Source-backed market evidence and an evidence-only report |
 | Light simulation | Research, eight hypothetical buyer contexts, sensitivity tests, an inspectable map, and a directional report |
-| Deep simulation | A product-specific Tally questionnaire, Terac fieldwork after quote approval, then research and simulation after the first matched human response |
+| Deep simulation | A product-specific Tally questionnaire and five-person Terac opportunity; review Terac's actual total before launch, then research and simulation start after the first matched submission |
 
 Synthetic counts are labeled **share of synthetic agents in this run**. They are not market share, purchase probabilities, or a representative survey. The report records sources, assumptions, model versions, and limitations. Gmail, calling, outreach, and payment collection are outside this release.
 
@@ -45,7 +45,9 @@ Keep both terminals running while using the site. The worker processes queued re
 
 Deep simulation creates a product-specific Tally form before model research starts. It includes the supplied product description, concepts, and images, plus questions about current alternatives, likely use, advantages, objections, price, and choice. Product images are presented through signed private Supabase Storage URLs that expire after 30 days; a failed image link blocks form creation rather than silently omitting the image. The form captures Terac's participant submission ID in a hidden field and redirects completed respondents to Terac's completion callback.
 
-The owner reviews Terac's confirmed feasibility quote and approves paid recruitment. A public Tally answer alone does not unlock AI research. The worker matches a completed Tally response to Terac's submission record, then starts evidence gathering and synthetic simulation. The form URL, study state, answers, and report versions are saved with the run. The local Orit site never needs a public deployment because participants use Tally's hosted form.
+Orit creates a Terac opportunity draft capped at five qualified US participants and saves Terac's actual all-in total for review. The current opportunity was quoted at **$45 total for five people**; new opportunities use their own provider totals. The owner reviews the current total and the exact materials shown to participants before approving a paid launch. **Refresh Terac price** checks for changes; a changed total requires a new confirmation. Terac MCP reports the all-in opportunity total and participant count, but it has no field to set or read a separate participant payout. The app does not claim or enforce a per-person payout.
+
+A public Tally answer alone does not unlock AI research. The worker matches a completed Tally response to a submission on the same Terac opportunity, then starts evidence gathering and synthetic simulation after the first match. Additional matched responses may later appear in a versioned human-feedback addendum. The form URL, opportunity state, answers, and report versions are saved with the run. The local Orit site needs no public deployment because participants use Tally's hosted form.
 
 ## Checks
 
