@@ -32,7 +32,7 @@ This checkout is configured for the existing **OritApp** Supabase project. The `
 
 Set `OPENAI_API_KEY` and `EXA_API_KEY` for live research. `SOLARI_API_KEY` enables selective browser extraction; an inaccessible page without it is recorded as an evidence gap. Deep simulation also requires `TALLY_API_KEY` and `TERAC_API_KEY` in `.env.local`. Obtain the Tally key from your Tally account's API keys; the Codex Tally plugin's OAuth connection is separate from the local worker. The worker calls Tally MCP at `https://api.tally.so/mcp` with `Authorization: Bearer <TALLY_API_KEY>`. Set `TALLY_WORKSPACE_ID` if your key has access to multiple non-personal workspaces. Set `RESEARCH_BUDGET_*_USD=0` and `RESEARCH_DAILY_RUN_LIMIT=0` for no application-level spend or daily run caps. Positive values are optional caps. Every model and provider call still records usage and estimated cost. The website and worker run on your computer, but research still calls the configured Supabase, OpenAI, Exa, Tally, and Terac services as needed. `APP_BASE_URL` is not required for this local version.
 
-Add `GMAIL_USER` and `GMAIL_APP_PASSWORD` for the dedicated inbox to `.env.local`. The local inbox poller needs these credentials. The optional hosted outreach agent also needs its function secrets configured for OritApp; see [outreach setup](docs/OUTREACH_SETUP.md). The paid intake verifies its signed brief and payment before creating a research run. Configure the Whop credentials and `PAID_EMAIL_INTAKE_ENABLED=true` to activate it.
+Add `GMAIL_USER` and `GMAIL_APP_PASSWORD` for the dedicated inbox to `.env.local`. The local inbox poller needs these credentials. The optional hosted outreach agent also needs its function secrets configured for OritApp; see [outreach setup](docs/OUTREACH_SETUP.md). By default, an authenticated product email with a complete description, buyer audience, and research question starts a light simulation without a payment check. Incomplete messages and attachments wait for review. Set `EMAIL_RESEARCH_INTAKE_ENABLED=false` to pause this handoff. The optional paid flow replaces it when `PAID_EMAIL_INTAKE_ENABLED=true` and Whop is configured.
 
 `RESEARCH_DAILY_RUN_LIMIT` defaults to zero (unlimited). Idempotent retries reuse the same run. Projects and pending runs are shared across local browser tabs and sessions using the same server configuration.
 
@@ -45,7 +45,7 @@ npm run worker:research
 
 Keep both terminals running while using the site. The worker processes queued research; web requests do not run the long simulations. The app binds to `127.0.0.1` and does not need a public deployment.
 
-Automatic report email requires the worker to stay running, the Gmail credentials above, and an eligible email intake linked to a run. The current paid intake gate also requires its Whop configuration and `PAID_EMAIL_INTAKE_ENABLED=true`; with that gate disabled, no new customer emails create research runs. The report remains downloadable as a PDF in the workspace.
+Automatic report email requires the worker to stay running, the Gmail credentials above, and a completed run linked to an eligible email intake. The report remains downloadable as a PDF in the workspace. Earlier skipped emails are not restarted automatically.
 
 ## Human feedback in the local version
 

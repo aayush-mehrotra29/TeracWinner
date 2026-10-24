@@ -17,9 +17,52 @@ export type ClaimedIntake = {
 export function emailRunKey(paymentId: string): string {
   return `whop:${createHash("sha256").update(paymentId).digest("hex")}`;
 }
+export function incomingEmailRunKey(messageKey: string): string {
+  return `email:${createHash("sha256").update(messageKey).digest("hex")}`;
+}
 function authenticated(row: ClaimedIntake): boolean {
   const analysis=row.analysis as Record<string,unknown> | null;
   return row.sender_authenticated===true || analysis?._sender_authenticated===true;
+}
+function extractedText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Only a saved, classified product brief can start unpaid local research. */
+export function inputFromResearchEmail(row: ClaimedIntake):
+  | { status: "ready"; input: ResearchInput }
+  | { status: "needs_details" | "skipped"; reason: string } {
+  const analysis = row.analysis && typeof row.analysis === "object" && !Array.isArray(row.analysis)
+    ? row.analysis as Record<string, unknown> : {};
+  if (analysis.category !== "product_submission") {
+    return { status: "skipped", reason: "Email is not a product submission." };
+  }
+  if (!authenticated(row)) {
+    return { status: "needs_details", reason: "Sender authentication could not be verified in Gmail." };
+  }
+  if (row.body_incomplete || (Array.isArray(row.attachment_names) && row.attachment_names.length)) {
+    return { status: "needs_details", reason: "The complete email or attached materials need review before research starts." };
+  }
+  if (analysis.next_action !== "research_intake") {
+    return { status: "needs_details", reason: "A product description, buyer audience, and research question are needed." };
+  }
+  const name = extractedText(analysis.product_name) ?? row.subject.trim();
+  const description = extractedText(analysis.product_description);
+  const audience = extractedText(analysis.target_audience);
+  const question = extractedText(analysis.research_question);
+  if (!name || !description || !audience || !question) {
+    return { status: "needs_details", reason: "A product description, buyer audience, and research question are needed." };
+  }
+  try {
+    const url = extractedText(analysis.product_url);
+    const input = parseResearchInput({
+      idea: `${name}\n\n${description}\n\nResearch decision: ${question}`,
+      mode: "light_simulation", audience, concepts: [], imageAssetIds: [], urls: url ? [url] : [],
+    });
+    return { status: "ready", input };
+  } catch {
+    return { status: "needs_details", reason: "Product details or URL are invalid for research." };
+  }
 }
 export function inputFromEmail(row: ClaimedIntake, order?: PaidOrder):
   | { status: "ready"; input: ResearchInput & { paymentId: string } }
@@ -60,13 +103,29 @@ export function linkedIntakeFields(ownerId: string, projectId: string, runId: st
     research_error: null,
   };
 }
-export async function handoffOneEmail(db: Admin = createAdminClient(), verify = verifyPayment): Promise<boolean> {
-  if (env("PAID_EMAIL_INTAKE_ENABLED") !== "true") return false;
+export async function handoffOneEmail(
+  db: Admin = createAdminClient(),
+  verify = verifyPayment,
+  create = createProjectAndRun,
+): Promise<boolean> {
+  const paidIntake = env("PAID_EMAIL_INTAKE_ENABLED") === "true";
+  if (!paidIntake && env("EMAIL_RESEARCH_INTAKE_ENABLED") === "false") return false;
   const { data, error } = await db.rpc("orit_claim_research_intake", { p_token: randomUUID() });
   if (error) throw error;
   if (!data || !(data as { message_key?: string | null }).message_key) return false;
   const row = data as ClaimedIntake;
   try {
+    if (!paidIntake) {
+      const decision = inputFromResearchEmail(row);
+      if (decision.status !== "ready") {
+        await finishClaim(db, row, { research_status: decision.status, research_error: decision.reason });
+        return true;
+      }
+      const ownerId = localWorkspaceOwnerId();
+      const { project, run } = await create(db, ownerId, decision.input, incomingEmailRunKey(row.message_key));
+      await finishClaim(db, row, linkedIntakeFields(ownerId, project.id, run.id));
+      return true;
+    }
     const brief = parsePaidBrief(row.body_text || "");
     if (!brief || !authenticated(row)) {
       await finishClaim(db, row, { research_status: "needs_details", research_error: "Authenticated paid brief required." }); return true;
@@ -83,7 +142,7 @@ export async function handoffOneEmail(db: Admin = createAdminClient(), verify = 
       await finishClaim(db, row, { research_status: "skipped", research_error: "This payment already belongs to another brief." }); return true;
     }
     const ownerId = localWorkspaceOwnerId();
-    const { project, run } = await createProjectAndRun(db, ownerId, decision.input, emailRunKey(order.paymentId));
+    const { project, run } = await create(db, ownerId, decision.input, emailRunKey(order.paymentId));
     await orders.link(order.paymentId,row.message_key,project.id,run.id);
     await finishClaim(db, row, linkedIntakeFields(ownerId, project.id, run.id));
     return true;
@@ -93,9 +152,9 @@ export async function handoffOneEmail(db: Admin = createAdminClient(), verify = 
     }
     await finishClaim(db, row, {
       research_status: row.research_attempts >= 3 ? "failed" : "pending",
-      research_error: "Paid intake is unavailable; no additional run authorized. Check worker configuration.",
+      research_error: "Email research handoff is unavailable; check worker configuration.",
       research_next_attempt_at: new Date(Date.now() + 60_000 * 2 ** row.research_attempts).toISOString(),
     });
-    throw new Error("Paid email handoff unavailable; inspect worker configuration.");
+    throw new Error("Email research handoff unavailable; inspect worker configuration.");
   }
 }

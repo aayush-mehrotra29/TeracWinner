@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emailRunKey, inputFromEmail, linkedIntakeFields, type ClaimedIntake } from "../../src/lib/outreach/research-handoff";
+import { emailRunKey, handoffOneEmail, incomingEmailRunKey, inputFromEmail, inputFromResearchEmail, linkedIntakeFields, type ClaimedIntake } from "../../src/lib/outreach/research-handoff";
 import { intakeToken, paidBriefTemplate, parsePaidBrief, verifyIntakeToken } from "../../src/lib/outreach/paid-brief";
 import { paidOrder, type WhopPayment } from "../../src/lib/outreach/whop";
 import { gmailAuthenticatedSender } from "../../src/lib/outreach/gmail";
+import type { ResearchInput } from "../../src/lib/api/validation";
 process.env.WHOP_INTAKE_SIGNING_SECRET = "test-only-signing-key-012345678901234567890";
 const money = (amount: string) => ({ amount, currency: "usd" });
 const payment: WhopPayment = {
@@ -82,4 +83,79 @@ test("a newly linked intake enables delivery in the same database update", () =>
   assert.equal(fields.research_status, "linked");
   assert.equal(fields.research_run_id, "run-1");
   assert.equal(fields.auto_report_delivery_enabled, true);
+});
+test("an authenticated product email starts one fixed light simulation without payment", () => {
+  const row: ClaimedIntake = {
+    ...rowFor(), body_text: "Here is our seaweed snack idea.",
+    analysis: { _sender_authenticated: true, category: "product_submission", next_action: "research_intake",
+      product_name: "Seoul Street", product_description: "Crunchy seaweed and rice chips with Korean street-food flavors.",
+      target_audience: "US snack buyers", research_question: "Which flavor and positioning should launch first?",
+      product_url: "https://example.com/snacks" },
+  };
+  const result = inputFromResearchEmail(row);
+  assert.equal(result.status, "ready");
+  if (result.status === "ready") {
+    assert.equal(result.input.mode, "light_simulation");
+    assert.equal(result.input.paymentId, undefined);
+    assert.deepEqual(result.input.urls, ["https://example.com/snacks"]);
+  }
+  assert.equal(incomingEmailRunKey(row.message_key), incomingEmailRunKey(row.message_key));
+  assert.notEqual(incomingEmailRunKey(row.message_key), incomingEmailRunKey("gmail:another"));
+});
+test("unrelated, unauthenticated, incomplete, and unsafe email submissions do not start runs", () => {
+  const ready: ClaimedIntake = { ...rowFor(), analysis: {
+    _sender_authenticated: true, category: "product_submission", next_action: "research_intake",
+    product_name: "Seoul Street", product_description: "Crunchy seaweed and rice chips.",
+    target_audience: "US snack buyers", research_question: "Would they try it?", product_url: null,
+  } };
+  assert.equal(inputFromResearchEmail({ ...ready, analysis: { category: "spam" } }).status, "skipped");
+  assert.equal(inputFromResearchEmail({ ...ready, sender_authenticated: false,
+    analysis: { ...(ready.analysis as object), _sender_authenticated: false } }).status, "needs_details");
+  assert.equal(inputFromResearchEmail({ ...ready, body_incomplete: true }).status, "needs_details");
+  assert.equal(inputFromResearchEmail({ ...ready, attachment_names: ["package.png"] }).status, "needs_details");
+  assert.equal(inputFromResearchEmail({ ...ready, analysis: {
+    ...(ready.analysis as object), product_url: "http://127.0.0.1/private" } }).status, "needs_details");
+});
+test("a claimed product email is linked to its saved run with report delivery enabled", async () => {
+  const row: ClaimedIntake = { ...rowFor(), analysis: {
+    _sender_authenticated: true, category: "product_submission", next_action: "research_intake",
+    product_name: "Seoul Street", product_description: "Crunchy seaweed and rice chips.",
+    target_audience: "US snack buyers", research_question: "Would they try it?", product_url: null,
+  } };
+  const previousOwner = process.env.ORIT_LOCAL_OWNER_ID;
+  const previousPaid = process.env.PAID_EMAIL_INTAKE_ENABLED;
+  process.env.ORIT_LOCAL_OWNER_ID = "86e7b651-0d1a-410e-ba7b-ffec57712b64";
+  process.env.PAID_EMAIL_INTAKE_ENABLED = "false";
+  let linked: Record<string, unknown> | null = null;
+  let createKey: string | null = null;
+  const db = {
+    rpc: async () => ({ data: row, error: null }),
+    from: () => ({ update: (fields: Record<string, unknown>) => {
+      linked = fields;
+      const query = { eq: () => query, select: async () => ({ data: [{ message_key: row.message_key }], error: null }) };
+      return query;
+    } }),
+  };
+  try {
+    const didWork = await handoffOneEmail(
+      db as unknown as Parameters<typeof handoffOneEmail>[0],
+      async () => { throw new Error("Payment must not be checked"); },
+      (async (_db: unknown, _owner: string, input: ResearchInput, key: string) => {
+        assert.equal(input.mode, "light_simulation");
+        createKey = key;
+        return { project: { id: "project-1" }, run: { id: "run-1" } };
+      }) as unknown as NonNullable<Parameters<typeof handoffOneEmail>[2]>,
+    );
+    assert.equal(didWork, true);
+    assert.equal(createKey, incomingEmailRunKey(row.message_key));
+    const linkedFields = linked as Record<string, unknown> | null;
+    assert.equal(linkedFields?.["research_status"], "linked");
+    assert.equal(linkedFields?.["research_run_id"], "run-1");
+    assert.equal(linkedFields?.["auto_report_delivery_enabled"], true);
+  } finally {
+    if (previousOwner === undefined) delete process.env.ORIT_LOCAL_OWNER_ID;
+    else process.env.ORIT_LOCAL_OWNER_ID = previousOwner;
+    if (previousPaid === undefined) delete process.env.PAID_EMAIL_INTAKE_ENABLED;
+    else process.env.PAID_EMAIL_INTAKE_ENABLED = previousPaid;
+  }
 });
