@@ -1,13 +1,29 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowUpRight, CircleHelp, ExternalLink, Network } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ExternalLink } from "lucide-react";
 import type { Graph, MapNode } from "./types";
 
 type Source = { id: string; title?: string; url?: string };
+export type AgentDiscussion = {
+  objection: string;
+  perspectives: Array<{ contextId: string; position: string }>;
+  conclusion: string;
+  independentChoicesUnchanged?: boolean;
+};
+export type SavedAgentEvaluation = {
+  id: string;
+  contextId: string;
+  choice: string;
+  rationale: string;
+  objections: string[];
+  evidenceIds: string[];
+  uncertainty?: string;
+};
 type Agent = {
   context: MapNode;
   evaluation: MapNode | null;
+  hasGraphEvaluation: boolean;
   objections: MapNode[];
   choice: string | null;
 };
@@ -20,8 +36,21 @@ const choiceNames: Record<string, string> = {
   insufficient_information: "More information needed",
 };
 
+// Small abstract pixel portraits distinguish contexts without suggesting real people.
+const pixelPatterns = [
+  ["00100", "01110", "11011", "11111", "10101"].join(""),
+  ["01110", "11011", "11111", "01110", "10101"].join(""),
+  ["00100", "01110", "11111", "10101", "10101"].join(""),
+  ["01110", "11111", "10101", "11111", "01010"].join(""),
+];
+
+function PixelMark({ index }: { index: number }) {
+  return <span className="orit-agent-pixels" aria-hidden="true">{[...pixelPatterns[index % pixelPatterns.length]].map((pixel, cell) =>
+    <span key={cell} className={pixel === "1" ? "is-filled" : ""} />)}</span>;
+}
+
 function choiceName(choice: string | null) {
-  return choice ? choiceNames[choice] ?? choice.replaceAll("_", " ") : "Awaiting evaluation";
+  return choice ? choiceNames[choice] ?? choice.replaceAll("_", " ") : "Waiting";
 }
 
 function choiceTone(choice: string | null) {
@@ -45,27 +74,27 @@ function numericAgentId(id: string) {
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 }
 
-function agentPositions(count: number) {
-  return Array.from({ length: count }, (_, index) => {
-    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / count;
-    return { x: 50 + 37 * Math.cos(angle), y: 50 + 36 * Math.sin(angle) };
-  });
+function cleanDisplayText(text: string) {
+  return text.replace(/\s*\[src:[^\]]+\]/gi, "").replace(/\s{2,}/g, " ").trim();
 }
 
 export default function AgentSimulationView({
   graph,
   sources = [],
+  savedEvaluations = [],
+  discussion = null,
   onInspectEvidence,
 }: {
   graph: Graph;
   sources?: Source[];
+  savedEvaluations?: SavedAgentEvaluation[];
+  discussion?: AgentDiscussion | null;
   onInspectEvidence?: (nodeId: string) => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const agents = useMemo<Agent[]>(() => {
     const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
-    const evaluations = graph.nodes.filter((node) =>
-      node.kind === "outcome" && typeof node.metadata?.contextId === "string");
+    const evaluations = graph.nodes.filter((node) => node.kind === "outcome" && typeof node.metadata?.contextId === "string");
     return graph.nodes.filter((node) => /^(context|persona|buyer)$/.test(node.kind.toLowerCase()))
       .sort((a, b) => numericAgentId(a.id) - numericAgentId(b.id) || a.label.localeCompare(b.label))
       .map((context) => {
@@ -73,109 +102,107 @@ export default function AgentSimulationView({
           .filter((edge) => edge.source === context.id && edge.kind === "evaluates")
           .map((edge) => nodes.get(edge.target))
           .find((node) => node?.kind === "outcome" && node.metadata?.contextId === context.id);
-        const evaluation = linkedEvaluation ?? evaluations.find((node) => node.metadata?.contextId === context.id) ?? null;
-        const objections = evaluation ? graph.edges
-          .filter((edge) => edge.source === evaluation.id)
+        const graphEvaluation = linkedEvaluation ?? evaluations.find((node) => node.metadata?.contextId === context.id) ?? null;
+        const savedEvaluation = savedEvaluations.find((item) => item.contextId === context.id);
+        const evaluation: MapNode | null = graphEvaluation ?? (savedEvaluation ? {
+          id: savedEvaluation.id,
+          kind: "outcome",
+          label: savedEvaluation.choice.replaceAll("_", " "),
+          summary: savedEvaluation.rationale,
+          sourceIds: savedEvaluation.evidenceIds,
+          metadata: { contextId: context.id, choice: savedEvaluation.choice, uncertainty: savedEvaluation.uncertainty },
+        } : null);
+        const objections = graphEvaluation ? graph.edges
+          .filter((edge) => edge.source === graphEvaluation.id)
           .map((edge) => nodes.get(edge.target))
-          .filter((node): node is MapNode => node?.kind === "objection") : [];
+          .filter((node): node is MapNode => node?.kind === "objection") : savedEvaluation?.objections.map((objection, index) => ({
+          id: `objection:${context.id}:${index}`,
+          kind: "objection",
+          label: objection.slice(0, 80),
+          summary: objection,
+          sourceIds: savedEvaluation.evidenceIds,
+          metadata: {},
+        })) ?? [];
         const choice = typeof evaluation?.metadata?.choice === "string" ? evaluation.metadata.choice : null;
-        return { context, evaluation, objections, choice };
+        return { context, evaluation, hasGraphEvaluation: Boolean(graphEvaluation), objections, choice };
       });
-  }, [graph]);
-  const positions = useMemo(() => agentPositions(agents.length), [agents.length]);
-  const idea = graph.nodes.find((node) => node.id === "idea") ?? null;
+  }, [graph, savedEvaluations]);
   const selected = agents.find((agent) => agent.context.id === selectedId) ?? agents[0] ?? null;
   const selectedIndex = selected ? agents.indexOf(selected) : -1;
   const evaluated = agents.filter((agent) => agent.evaluation).length;
+  const discussionParticipants = new Set(discussion?.perspectives.map((item) => item.contextId) ?? []);
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
 
   if (!agents.length) {
-    return <div className="orit-agent-empty"><Network size={24} /><span>Agent simulation</span><h3>Buyer contexts will appear here.</h3><p>Open the saved buyer-context stage or a later stage to inspect the hypothetical agents.</p></div>;
+    return <div className="orit-agent-empty"><div className="orit-agent-empty-pixels" aria-hidden="true" /><h3>No agents saved yet</h3><p>Buyer contexts appear after the simulation creates them.</p></div>;
   }
 
   const selectedParts = contextParts(selected?.context.summary);
-  const sourceIds = [...new Set([...(selected?.evaluation?.sourceIds ?? []), ...(selected?.objections.flatMap((node) => node.sourceIds ?? []) ?? [])])];
   const budget = typeof selected?.context.metadata?.budget === "string" || typeof selected?.context.metadata?.budget === "number"
     ? String(selected.context.metadata.budget) : null;
   const uncertainty = typeof selected?.evaluation?.metadata?.uncertainty === "string"
     ? selected.evaluation.metadata.uncertainty : null;
+  const sourceIds = [...new Set([...(selected?.evaluation?.sourceIds ?? []), ...(selected?.objections.flatMap((node) => node.sourceIds ?? []) ?? [])])];
+  const linkedSources = sourceIds.map((id) => sourceById.get(id)).filter((source): source is Source => Boolean(source));
+  const perspectives = discussion?.perspectives.flatMap((perspective) => {
+    const agent = agents.find((item) => item.context.id === perspective.contextId);
+    return agent ? [{ ...perspective, label: agent.context.label, index: agents.indexOf(agent), choice: agent.choice }] : [];
+  }) ?? [];
 
-  return <section className="orit-agent-simulation" aria-label="Saved synthetic agent simulation">
+  return <section className="orit-agent-simulation" aria-label="Saved hypothetical agent simulation"><div className="orit-agent-layout">
     <div className="orit-agent-field">
-      <div className="orit-agent-field-head">
-        <div><span className="orit-agent-eyebrow"><span className="orit-agent-eyebrow-mark" /> Saved simulation snapshot</span><h3>Agent field</h3></div>
-        <div className="orit-agent-count"><strong>{String(evaluated).padStart(2, "0")}</strong><span>/ {String(agents.length).padStart(2, "0")} decisions</span></div>
-      </div>
-      <div className={`orit-agent-canvas ${agents.length > 8 ? "is-dense" : ""}`}>
-        {idea && <svg className="orit-agent-links" viewBox="0 0 1000 620" preserveAspectRatio="none" aria-hidden="true">
-          {agents.map((agent, index) => graph.edges.some((edge) => edge.source === agent.context.id && edge.target === idea.id)
-            ? <g key={agent.context.id} className={selected?.context.id === agent.context.id ? "is-selected" : ""}>
-              <line x1="500" y1="310" x2={positions[index].x * 10} y2={positions[index].y * 6.2} />
-              <circle cx={positions[index].x * 10} cy={positions[index].y * 6.2} r="3" />
-            </g> : null)}
-        </svg>}
-        <div className="orit-agent-core" aria-label="Research idea">
-          <div className="orit-agent-core-icon"><Network size={21} strokeWidth={1.7} /></div>
-          <span>Research question</span>
-          <strong>{idea?.summary || idea?.label || "The idea"}</strong>
-        </div>
+      <div className="orit-agent-field-head"><span>Hypothetical agents</span><strong>{evaluated}/{agents.length} saved</strong></div>
+      <div className="orit-agent-pixel-field" role="group" aria-label="Select an agent">
         {agents.map((agent, index) => <button
           type="button"
           key={agent.context.id}
-          className={`orit-agent-node ${selected?.context.id === agent.context.id ? "is-selected" : ""}`}
+          className={`orit-agent-tile ${selected?.context.id === agent.context.id ? "is-selected" : ""} ${discussionParticipants.has(agent.context.id) ? "is-discussion-participant" : ""}`}
           data-tone={choiceTone(agent.choice)}
-          style={{ left: `${positions[index].x}%`, top: `${positions[index].y}%` }}
           onClick={() => setSelectedId(agent.context.id)}
           aria-pressed={selected?.context.id === agent.context.id}
           aria-label={`${agent.context.label}, ${choiceName(agent.choice)}`}
         >
-          <span className="orit-agent-node-top"><span className="orit-agent-avatar">{String(index + 1).padStart(2, "0")}</span><span className="orit-agent-node-status" /></span>
+          <span className="orit-agent-tile-top"><PixelMark index={index} /></span>
           <strong>{agent.context.label}</strong>
-          <small>{choiceName(agent.choice)}</small>
+          <small><span className="orit-agent-choice-dot" />{choiceName(agent.choice)}</small>
         </button>)}
       </div>
-      <div className="orit-agent-field-foot"><span><span className="orit-agent-foot-dot" /> {agents.length} hypothetical buyer contexts</span><span>Independent evaluations from saved research</span></div>
-      <div className="orit-agent-feed">
-        <div className="orit-agent-feed-head"><span>Saved decision feed</span><strong>{evaluated} entries</strong></div>
-        {evaluated ? <div className="orit-agent-feed-list">{agents.filter((agent) => agent.evaluation).map((agent) => {
-          const index = agents.indexOf(agent);
-          return <button type="button" key={agent.context.id} className={selected?.context.id === agent.context.id ? "is-selected" : ""} onClick={() => setSelectedId(agent.context.id)}>
-            <span className="orit-agent-feed-index">{String(index + 1).padStart(2, "0")}</span>
-            <span className="orit-agent-feed-copy"><strong>{agent.context.label}</strong><small>{agent.evaluation?.summary || "Decision saved"}</small></span>
-            <span className="orit-agent-feed-choice" data-tone={choiceTone(agent.choice)}>{choiceName(agent.choice)}</span>
-          </button>;
-        })}</div> : <p>Individual decisions appear here after the evaluation stage is saved.</p>}
-      </div>
+      {perspectives.length > 0 && <div className={`orit-agent-discussion-link ${perspectives.length > 1 ? "has-multiple" : ""}`}><span>Saved discussion</span><div role="group" aria-label="Agents with saved discussion perspectives">{perspectives.map((perspective) => <button
+        type="button"
+        key={perspective.contextId}
+        className={selected?.context.id === perspective.contextId ? "is-selected" : ""}
+        data-tone={choiceTone(perspective.choice)}
+        onClick={() => setSelectedId(perspective.contextId)}
+        aria-pressed={selected?.context.id === perspective.contextId}
+        aria-label={`Select ${cleanDisplayText(perspective.label)} from saved discussion`}
+      ><PixelMark index={perspective.index} /></button>)}</div></div>}
     </div>
     <aside className="orit-agent-inspector" aria-live="polite">
       {selected && <>
-        <div className="orit-agent-inspector-head"><span>Agent profile</span><span>{String(selectedIndex + 1).padStart(2, "0")} / {String(agents.length).padStart(2, "0")}</span></div>
-        <div className="orit-agent-profile-title"><div className="orit-agent-profile-avatar">{String(selectedIndex + 1).padStart(2, "0")}</div><div><span>Hypothetical buyer</span><h3>{selected.context.label}</h3></div></div>
-        <div className="orit-agent-profile-context">
-          {selectedParts.job && <p>{selectedParts.job}</p>}
-          {selectedParts.alternative && <div><span>Current alternative</span><strong>{selectedParts.alternative}</strong></div>}
-          {budget && <div><span>Budget</span><strong>{budget}</strong></div>}
-        </div>
-        <div className="orit-agent-decision" data-tone={choiceTone(selected.choice)}>
-          <span className="orit-agent-section-label">Recorded decision</span>
-          <div className="orit-agent-decision-value"><span className="orit-agent-decision-glyph" /><strong>{choiceName(selected.choice)}</strong></div>
-          <p>{selected.evaluation?.summary || "This buyer context has been saved. Its independent evaluation has not been saved yet."}</p>
-          {uncertainty && <div className="orit-agent-uncertainty"><CircleHelp size={13} /><span>Uncertainty: {uncertainty}</span></div>}
-        </div>
-        <div className="orit-agent-trace">
-          <div className="orit-agent-trace-head"><span className="orit-agent-section-label">Decision trace</span><span>Saved relationships</span></div>
-          <ol>
-            <li><span>01</span><div><strong>Buyer context</strong><p>{selectedParts.job || selected.context.label}</p></div></li>
-            <li><span>02</span><div><strong>Independent evaluation</strong><p>{selected.evaluation ? choiceName(selected.choice) : "Awaiting saved evaluation"}</p></div></li>
-            <li><span>03</span><div><strong>Objections</strong>{selected.objections.length ? <ul>{selected.objections.map((objection) => <li key={objection.id}>{objection.summary || objection.label}</li>)}</ul> : <p>{selected.evaluation ? "No objections were saved for this decision." : "Available after evaluation."}</p>}</div></li>
-          </ol>
-        </div>
-        {sourceIds.length > 0 && <div className="orit-agent-sources"><span className="orit-agent-section-label">Linked evidence</span>{sourceIds.map((id) => {
-          const source = sourceById.get(id);
-          return source?.url ? <a key={id} href={source.url} target="_blank" rel="noopener noreferrer"><span>{source.title || source.url}</span><ExternalLink size={13} /></a> : <span key={id}>{source?.title || id}</span>;
-        })}</div>}
-        {onInspectEvidence && <button type="button" className="orit-agent-inspect-button" onClick={() => onInspectEvidence(selected.evaluation?.id ?? selected.context.id)}>Inspect on evidence map <ArrowUpRight size={15} /></button>}
+        <div className="orit-agent-inspector-head"><span>Selected agent</span><span>{String(selectedIndex + 1).padStart(2, "0")} / {String(agents.length).padStart(2, "0")}</span></div>
+        <div className="orit-agent-selected-title"><span className="orit-agent-selected-mark" data-tone={choiceTone(selected.choice)}><PixelMark index={selectedIndex} /></span><h3>{selected.context.label}</h3></div>
+        <div className="orit-agent-selected-choice" data-tone={choiceTone(selected.choice)}><span className="orit-agent-choice-dot" />{choiceName(selected.choice)}</div>
+        <p className="orit-agent-preview">{selected.evaluation?.summary ? cleanDisplayText(selected.evaluation.summary) : "Evaluation waiting to be saved."}</p>
+        <details className="orit-agent-details">
+          <summary>Context and reasoning <ChevronDown size={14} /></summary>
+          <div className="orit-agent-details-body">
+            {selectedParts.job && <div><span>Buyer context</span><p>{cleanDisplayText(selectedParts.job)}</p></div>}
+            {selectedParts.alternative && <div><span>Current alternative</span><p>{cleanDisplayText(selectedParts.alternative)}</p></div>}
+            {budget && <div><span>Budget</span><p>{budget}</p></div>}
+            {selected.evaluation && <div><span>Decision rationale</span><p>{cleanDisplayText(selected.evaluation.summary ?? "")}</p></div>}
+            {uncertainty && <div><span>Uncertainty</span><p>{cleanDisplayText(uncertainty)}</p></div>}
+            {selected.objections.length > 0 && <div><span>Objections</span><ul>{selected.objections.map((objection) => <li key={objection.id}>{cleanDisplayText(objection.summary || objection.label)}</li>)}</ul></div>}
+            {linkedSources.length > 0 && <div><span>Linked evidence</span><div className="orit-agent-sources">{linkedSources.map((source) => source.url
+              ? <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer">{source.title || source.url}<ExternalLink size={13} /></a>
+              : <p key={source.id}>{source.title || "Saved source"}</p>)}</div></div>}
+          </div>
+        </details>
+        {discussion && <details className="orit-agent-discussion">
+          <summary>Saved discussion <span>{perspectives.length} perspectives</span><ChevronDown size={14} /></summary>
+          <div className="orit-agent-discussion-body"><p>{cleanDisplayText(discussion.objection)}</p><div>{perspectives.map((perspective) => <button type="button" key={perspective.contextId} onClick={() => setSelectedId(perspective.contextId)}><strong>{perspective.label}</strong><span>{cleanDisplayText(perspective.position)}</span></button>)}</div><p>{cleanDisplayText(discussion.conclusion)}</p><small>Model-written perspectives. Independent decisions are unchanged.</small></div>
+        </details>}
+        {onInspectEvidence && <button type="button" className="orit-agent-inspect-button" onClick={() => onInspectEvidence(selected.hasGraphEvaluation ? selected.evaluation!.id : selected.context.id)}>View on map <ArrowUpRight size={15} /></button>}
       </>}
     </aside>
-  </section>;
+  </div></section>;
 }

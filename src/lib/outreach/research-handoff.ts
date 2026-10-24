@@ -48,6 +48,18 @@ async function finishClaim(db: Admin, row: ClaimedIntake, fields: Record<string,
   if (error) throw error;
   if (!data?.length) throw new Error("Email intake claim was lost before completion.");
 }
+/** Linking and delivery opt-in are saved together so a completed run can be queued once. */
+export function linkedIntakeFields(ownerId: string, projectId: string, runId: string) {
+  return {
+    research_status: "linked" as const,
+    research_owner_id: ownerId,
+    research_project_id: projectId,
+    research_run_id: runId,
+    auto_report_delivery_enabled: true,
+    research_started_at: new Date().toISOString(),
+    research_error: null,
+  };
+}
 export async function handoffOneEmail(db: Admin = createAdminClient(), verify = verifyPayment): Promise<boolean> {
   if (env("PAID_EMAIL_INTAKE_ENABLED") !== "true") return false;
   const { data, error } = await db.rpc("orit_claim_research_intake", { p_token: randomUUID() });
@@ -73,10 +85,7 @@ export async function handoffOneEmail(db: Admin = createAdminClient(), verify = 
     const ownerId = localWorkspaceOwnerId();
     const { project, run } = await createProjectAndRun(db, ownerId, decision.input, emailRunKey(order.paymentId));
     await orders.link(order.paymentId,row.message_key,project.id,run.id);
-    await finishClaim(db, row, {
-      research_status: "linked", research_owner_id: ownerId, research_project_id: project.id,
-      research_run_id: run.id, research_started_at: new Date().toISOString(), research_error: null,
-    });
+    await finishClaim(db, row, linkedIntakeFields(ownerId, project.id, run.id));
     return true;
   } catch (caught) {
     if (caught instanceof PaymentRejected) {

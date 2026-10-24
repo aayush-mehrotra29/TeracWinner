@@ -7,6 +7,7 @@ import { syncHostedInbox } from "../lib/outreach/hosted";
 import { syncPaidInvitations } from "../lib/outreach/paid-invitations";
 import { syncSentMail } from "../lib/outreach/sent";
 import { handoffOneEmail } from "../lib/outreach/research-handoff";
+import { deliverOnePendingReport } from "../lib/outreach/report-outbox";
 import { humanPollPage } from "./polling";
 
 loadEnvConfig(process.cwd());
@@ -102,7 +103,7 @@ async function pollHumanStudies(store: ResearchStore): Promise<void> {
   }
 }
 
-async function pollEmailOnce(): Promise<boolean> {
+async function pollEmailOnce(store: ResearchStore): Promise<boolean> {
   let backlog = false;
   try { await syncPaidInvitations(); }
   catch { console.error("Paid invitation sync unavailable; check payment and worker configuration."); }
@@ -129,12 +130,23 @@ async function pollEmailOnce(): Promise<boolean> {
       break;
     }
   }
+  // Sending is separate from run processing. The database queues only final
+  // reports linked to newly opted-in Gmail intakes.
+  for (let index = 0; index < 5; index += 1) {
+    try {
+      if (!await deliverOnePendingReport(store.db)) break;
+      backlog = true;
+    } catch (error) {
+      console.error(`Report email delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+      break;
+    }
+  }
   return backlog;
 }
 
-async function emailLoop(shouldStop: () => boolean): Promise<void> {
+async function emailLoop(store: ResearchStore, shouldStop: () => boolean): Promise<void> {
   while (!shouldStop()) {
-    const backlog = await pollEmailOnce();
+    const backlog = await pollEmailOnce(store);
     await new Promise((resolve) => setTimeout(resolve, backlog ? 1_000 : EMAIL_POLL_INTERVAL_MS));
   }
 }
@@ -160,7 +172,7 @@ async function main(): Promise<void> {
   let stopped = false;
   process.on("SIGINT", () => { stopped = true; });
   process.on("SIGTERM", () => { stopped = true; });
-  void emailLoop(() => stopped).catch((error) => {
+  void emailLoop(store, () => stopped).catch((error) => {
     console.error(`Email poller stopped: ${error instanceof Error ? error.message : String(error)}`);
   });
   let lastHumanPoll = 0;

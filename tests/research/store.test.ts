@@ -12,9 +12,13 @@ function fakeDb() {
   const tables: Record<string, Row[]> = { runs: [], run_artifacts: [], run_events: [], stage_attempts: [], provider_calls: [], model_calls: [] };
   const from = (table: string) => {
     const filters: Array<[string, unknown]> = [];
+    const containsFilters: Array<[string, Row]> = [];
     let write: { kind: "update" | "insert"; data: Row } | null = null;
     let descending = false;
-    const matching = () => (tables[table] ?? []).filter((row) => filters.every(([key, value]) => row[key] === value));
+    const matching = () => (tables[table] ?? []).filter((row) =>
+      filters.every(([key, value]) => row[key] === value)
+      && containsFilters.every(([key, value]) => Object.entries(value).every(([nestedKey, nestedValue]) =>
+        (row[key] as Row | undefined)?.[nestedKey] === nestedValue)));
     const applyWrite = () => {
       if (!write) return matching();
       if (write.kind === "insert") {
@@ -28,6 +32,7 @@ function fakeDb() {
     const builder = {
       select: () => builder,
       eq: (key: string, value: unknown) => { filters.push([key, value]); return builder; },
+      contains: (key: string, value: Row) => { containsFilters.push([key, value]); return builder; },
       order: (_key: string, options?: { ascending?: boolean }) => { descending = options?.ascending === false; return builder; },
       limit: async (count: number) => ({ data: (descending ? [...matching()].reverse() : matching()).slice(0, count), error: null }),
       maybeSingle: async () => ({ data: matching()[0] ?? null, error: null }),
@@ -69,6 +74,17 @@ test("committed stage artifact resumes without repeating paid work", async () =>
   assert.equal(calls, 1);
   assert.equal(db.tables.stage_attempts.length, 1);
   assert.equal(db.tables.stage_attempts[0].status, "completed");
+});
+
+test("keyed run events survive retries without collapsing distinct search steps", async () => {
+  const db = fakeDb();
+  const store = new ResearchStore(db.client);
+  const record = run();
+  await store.eventOnceKey(record, "exa_search_completed", "evidence", "0", { resultCount: 2 });
+  await store.eventOnceKey(record, "exa_search_completed", "evidence", "0", { resultCount: 2 });
+  await store.eventOnceKey(record, "exa_search_completed", "evidence", "1", { resultCount: 3 });
+  assert.equal(db.tables.run_events.length, 2);
+  assert.deepEqual(db.tables.run_events.map((event) => (event.payload as Row).eventKey), ["0", "1"]);
 });
 
 test("failed stage attempt is recorded and retry increments attempt", async () => {
@@ -168,7 +184,36 @@ test("completed model output is replayed from a durable checkpoint", async () =>
     assert.equal(db.tables.model_calls.length, 1);
     assert.equal(db.tables.model_calls[0].status, "completed");
     assert.equal(db.tables.run_artifacts.filter((row) => row.kind === "model_output").length, 1);
+    assert.deepEqual(db.tables.run_events.map((row) => row.kind), ["model_call_started", "model_call_completed"]);
+    assert.equal((db.tables.run_events[1].payload as Row).eventKey,
+      (db.tables.run_events[0].payload as Row).eventKey);
     assert.ok(record.spent_usd > 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalKey;
+  }
+});
+
+test("model progress never reports completion for an invalid response", async () => {
+  const db = fakeDb();
+  const store = new ResearchStore(db.client);
+  const record = { ...run(), budget_usd: 0 };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    id: "resp_invalid", status: "completed", output_text: "not-json",
+    usage: { input_tokens: 40, output_tokens: 10 },
+  }), { status: 200 })) as typeof fetch;
+  try {
+    await assert.rejects(new ResearchModels(store, record).ask({
+      stage: "intake", model: "gpt-6-luna", schemaName: "research_intake_v1",
+      schema: { type: "object", properties: {}, required: [], additionalProperties: false },
+      instructions: "Test", input: "idea", maxOutputTokens: 100,
+    }));
+    assert.deepEqual(db.tables.run_events.map((event) => event.kind), ["model_call_started"]);
+    assert.equal(db.tables.model_calls[0].status, "failed");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OPENAI_API_KEY;

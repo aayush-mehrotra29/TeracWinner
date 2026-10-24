@@ -1,8 +1,9 @@
 import Workspace from "@/components/workspace/Workspace";
 import "@/components/workspace/workspace.css";
 import "@/components/workspace/workspace-restyle.css";
-import "@/components/workspace/agent-simulation.css";
 import "@/components/workspace/research-progress.css";
+import "@/components/workspace/agent-simulation.css";
+import "@/components/workspace/notion-home.css";
 
 export default function Home() {
   return <Workspace />;

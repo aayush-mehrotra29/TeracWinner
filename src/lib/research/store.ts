@@ -78,6 +78,14 @@ export class ResearchStore {
     if (!data?.length) await this.event(run, kind, stage, payload);
   }
 
+  async eventOnceKey(run: RunRow, kind: string, stage: ResearchStage, eventKey: string, payload: Record<string, unknown>): Promise<void> {
+    const { data, error } = await this.db.from("run_events").select("seq")
+      .eq("run_id", run.id).eq("kind", kind).eq("stage", stage)
+      .contains("payload", { eventKey }).limit(1);
+    if (error) throw new Error(`Unable to inspect run event ${kind}/${eventKey}: ${error.message}`);
+    if (!data?.length) await this.event(run, kind, stage, { ...payload, eventKey });
+  }
+
   async stage<T>(run: RunRow, stage: ResearchStage, kind: string, work: () => Promise<T>, input?: unknown): Promise<T> {
     this.assertLease();
     const prior = await this.artifact<T>(run.id, kind);

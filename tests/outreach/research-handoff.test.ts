@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emailRunKey, inputFromEmail, type ClaimedIntake } from "../../src/lib/outreach/research-handoff";
+import { emailRunKey, inputFromEmail, linkedIntakeFields, type ClaimedIntake } from "../../src/lib/outreach/research-handoff";
 import { intakeToken, paidBriefTemplate, parsePaidBrief, verifyIntakeToken } from "../../src/lib/outreach/paid-brief";
 import { paidOrder, type WhopPayment } from "../../src/lib/outreach/whop";
 import { gmailAuthenticatedSender } from "../../src/lib/outreach/gmail";
@@ -76,4 +76,10 @@ test("one payment has one stable bounded run key across different emails", () =>
   assert.equal(emailRunKey(payment.id),emailRunKey(payment.id));
   assert.notEqual(emailRunKey(payment.id),emailRunKey("pay_different123"));
   assert.ok(emailRunKey(payment.id).length<=128);
+});
+test("a newly linked intake enables delivery in the same database update", () => {
+  const fields = linkedIntakeFields("owner-1", "project-1", "run-1");
+  assert.equal(fields.research_status, "linked");
+  assert.equal(fields.research_run_id, "run-1");
+  assert.equal(fields.auto_report_delivery_enabled, true);
 });

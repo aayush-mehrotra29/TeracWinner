@@ -28,6 +28,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     for (const result of [projectResult, messagesResult, eventsResult, artifactsResult, reportsResult, studyResult, inputVersionsResult]) {
       if (result.error) throw result.error;
     }
+    // Delivery status is supplemental; a mail-status lookup must not hide the report.
+    const deliveryResult = await db.from("report_deliveries")
+      .select("report_version,status,sent_at")
+      .eq("run_id", id).eq("owner_id", user.id);
+    if (deliveryResult.error) console.error("Report delivery status unavailable", deliveryResult.error);
     const artifacts = artifactsResult.data ?? [];
     const graphArtifact = [...artifacts].reverse().find((artifact) => artifact.kind === "graph");
     const graph = graphArtifact?.data && typeof graphArtifact.data === "object"
@@ -42,6 +47,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       graph,
       report: reportsResult.data?.[0] ?? null,
       reports: reportsResult.data ?? [],
+      reportDeliveries: deliveryResult.data ?? [],
       study: studyResult.data ? {
         ...studyResult.data,
         approvalFingerprint: studyResult.data.quote

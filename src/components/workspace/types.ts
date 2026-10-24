@@ -79,6 +79,12 @@ export type ReportVersion = {
   created_at: string;
 };
 
+export type ReportDelivery = {
+  report_version: number;
+  status: "pending" | "sending" | "sent" | "uncertain" | "skipped";
+  sent_at: string | null;
+};
+
 export type Study = {
   id: string;
   status: string;
@@ -97,5 +103,6 @@ export type RunSnapshot = {
   graph?: Graph;
   report: ReportVersion | null;
   reports?: ReportVersion[];
+  reportDeliveries?: ReportDelivery[];
   study: Study | null;
 };

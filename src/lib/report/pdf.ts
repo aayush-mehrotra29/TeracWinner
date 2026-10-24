@@ -1,4 +1,4 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import { PDFDocument, PDFString, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import type { ReportContent, ReportPoint } from "@/lib/research/types";
 
 const PAGE_WIDTH = 612;
@@ -7,9 +7,18 @@ const MARGIN = 50;
 const BODY_WIDTH = PAGE_WIDTH - MARGIN * 2;
 const INK = rgb(0.075, 0.086, 0.14);
 const MUTED = rgb(0.37, 0.4, 0.47);
-const BLUE = rgb(0.063, 0.098, 0.925);
+const BLUE = rgb(0.102, 0.451, 0.91);
 const HAIRLINE = rgb(0.84, 0.86, 0.9);
-const PALE_BLUE = rgb(0.94, 0.95, 1);
+const PALE_BLUE = rgb(0.94, 0.97, 1);
+
+function sourceHref(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
 
 function printable(value: unknown, font: PDFFont): string {
   const raw = String(value ?? "")
@@ -87,15 +96,26 @@ export async function renderReportPdf(report: ReportContent): Promise<Uint8Array
     if (y - height < 66) newPage();
   }
 
-  function paragraph(raw: unknown, options: { size?: number; font?: PDFFont; color?: ReturnType<typeof rgb>; indent?: number; after?: number } = {}) {
+  function paragraph(raw: unknown, options: { size?: number; font?: PDFFont; color?: ReturnType<typeof rgb>; indent?: number; after?: number; href?: string } = {}) {
     const font = options.font ?? regular;
     const size = options.size ?? 10.5;
     const indent = options.indent ?? 0;
     const lineHeight = size * 1.43;
     const lines = wrap(printable(raw, font), font, size, BODY_WIDTH - indent);
+    const href = options.href ? sourceHref(options.href) : null;
     for (const line of lines) {
       requireSpace(lineHeight);
-      if (line) page.drawText(line, { x: MARGIN + indent, y, size, font, color: options.color ?? INK });
+      if (line) {
+        const x = MARGIN + indent;
+        page.drawText(line, { x, y, size, font, color: options.color ?? INK });
+        if (href) {
+          const annotation = document.context.obj({
+            Type: "Annot", Subtype: "Link", Rect: [x, y - 2, x + font.widthOfTextAtSize(line, size), y + size + 2],
+            Border: [0, 0, 0], A: { S: "URI", URI: PDFString.of(href) },
+          });
+          page.node.addAnnot(document.context.register(annotation));
+        }
+      }
       y -= lineHeight;
     }
     y -= options.after ?? 8;
@@ -199,7 +219,7 @@ export async function renderReportPdf(report: ReportContent): Promise<Uint8Array
   if (!report.sources.length) paragraph("No external sources were successfully retrieved.", { color: MUTED });
   for (const source of report.sources) {
     paragraph(`[${source.id}] ${source.title}`, { font: bold, size: 9.5, after: 1 });
-    paragraph(source.url, { size: 8, color: BLUE, after: 2 });
+    paragraph(source.url, { size: 8, color: BLUE, after: 2, href: source.url });
     paragraph(source.excerpt, { size: 9, color: MUTED, after: 9 });
   }
 

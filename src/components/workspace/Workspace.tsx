@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { Activity, ArrowRight, ChevronLeft, FileText, House, Inbox, Mail, Menu, Network, RotateCw, X } from "lucide-react";
+import { Activity, ArrowRight, ChevronLeft, ExternalLink, FileSearch, FileText, House, Inbox, Mail, Menu, Network, RotateCw, Search, Users, X } from "lucide-react";
 import { DEEP_PARTICIPANT_TARGET } from "@/lib/research/deep-config";
 import ExploreMap from "./ExploreMap";
+import type { AgentDiscussion, SavedAgentEvaluation } from "./AgentSimulationView";
 import ResearchProgress from "./ResearchProgress";
 import ReportView, { asReportContent } from "./ReportView";
 import StudyReview from "./StudyReview";
@@ -82,6 +83,13 @@ function runError(error: unknown): string | null {
 
 function humanize(value: string): string {
   return value.replaceAll(/[_-]+/g, " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function mergeRunEvents(existing: RunEvent[], incoming: RunEvent[]): RunEvent[] {
+  const bySequence = new Map<number, RunEvent>();
+  for (const event of existing) bySequence.set(event.seq, event);
+  for (const event of incoming) bySequence.set(event.seq, event);
+  return [...bySequence.values()].sort((a, b) => a.seq - b.seq);
 }
 
 function inboxDate(value: string): string {
@@ -170,6 +178,17 @@ function eventText(event: RunEvent): string {
   if (typeof payloadMessage === "string" && payloadMessage.trim()) return payloadMessage;
   const label = stageLabels[event.stage ?? ""] ?? event.stage?.replaceAll("_", " ") ?? "Research";
   switch (event.kind) {
+    case "exa_search_started": return "Searching public web sources with Exa";
+    case "exa_search_completed": return `Exa returned ${typeof event.payload?.resultCount === "number" ? event.payload.resultCount : "saved"} search results`;
+    case "exa_contents_started": return "Reading supplied URLs with Exa";
+    case "exa_contents_completed": return `Exa read ${typeof event.payload?.resultCount === "number" ? event.payload.resultCount : "saved"} supplied URLs`;
+    case "model_call_started": return `${typeof event.payload?.operation === "string" ? event.payload.operation : "Research agent"} is working`;
+    case "model_call_completed": return `${typeof event.payload?.operation === "string" ? event.payload.operation : "Research agent"} saved its result`;
+    case "solari_extract_started": return "Extracting a source with Solari";
+    case "solari_extract_completed": return "Solari saved the source extraction";
+    case "source_discovered": return "Added a source to the evidence set";
+    case "agent_evaluation": return "Saved an independent buyer evaluation";
+    case "discussion_ready": return "Saved the buyer discussion and objections";
     case "stage_started": return `${label} started`;
     case "stage_completed": return `${label} completed`;
     case "artifact": return `${label}: saved ${String(event.payload?.kind ?? "an artifact").replaceAll("_", " ")}`;
@@ -186,6 +205,121 @@ function eventText(event: RunEvent): string {
     case "addendum_ready": return "A human feedback addendum is ready";
     default: return event.kind.replaceAll("_", " ");
   }
+}
+
+function eventHeadline(event: RunEvent): string {
+  const payload = event.payload;
+  const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+  const buyer = typeof payload?.label === "string" ? payload.label.trim() : "";
+  const choice = readableChoice(payload?.choice);
+  switch (event.kind) {
+    case "exa_search_started": return "Searching with Exa";
+    case "exa_search_completed": return `Exa search complete${typeof payload?.acceptedCount === "number" ? ` · ${payload.acceptedCount} sources` : ""}`;
+    case "exa_contents_started": return "Exa reading supplied links";
+    case "exa_contents_completed": return `Exa finished supplied links${typeof payload?.acceptedCount === "number" ? ` · ${payload.acceptedCount} sources` : ""}`;
+    case "model_call_started": return typeof payload?.operation === "string" ? `${payload.operation} started` : "Research agent started";
+    case "model_call_completed": return typeof payload?.operation === "string" ? `${payload.operation} saved` : "Research agent saved output";
+    case "solari_extract_started": return `Reading source with Solari${title ? ` · ${title}` : ""}`;
+    case "solari_extract_completed": return `Solari extracted source${title ? ` · ${title}` : ""}`;
+    case "source_discovered": return `Source added${title ? ` · ${title}` : ""}`;
+    case "agent_evaluation": return `Buyer evaluated${buyer ? ` · ${buyer}` : ""}${choice ? ` → ${choice}` : ""}`;
+    case "discussion_ready": return "Buyer discussion saved";
+    case "report_ready": return "Report ready";
+    case "stage_started": return `${stageLabels[event.stage ?? ""] ?? humanize(event.stage ?? "Research")} started`;
+    case "stage_completed": return `${stageLabels[event.stage ?? ""] ?? humanize(event.stage ?? "Research")} complete`;
+    default: return eventText(event);
+  }
+}
+
+function safeSourceUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : null;
+  } catch { return null; }
+}
+
+function readableChoice(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const choices: Record<string, string> = {
+    concept_a: "Concept A", concept_b: "Concept B", status_quo: "Current solution",
+    neither: "Neither option", insufficient_information: "More information needed",
+  };
+  return choices[value] ?? humanize(value);
+}
+
+function eventActor(event: RunEvent): string {
+  if (event.kind.startsWith("exa_")) return "Exa · web search";
+  if (event.kind.startsWith("model_call_")) return typeof event.payload?.model === "string" ? `Research agent · ${event.payload.model}` : "Research agent";
+  if (event.kind.startsWith("solari_")) return "Solari · extraction";
+  if (event.kind === "source_discovered") return "Evidence source";
+  if (event.kind === "agent_evaluation" || event.kind === "discussion_ready") return "Agent simulation";
+  return "Orit · research";
+}
+
+function EventGlyph({ event }: { event: RunEvent }) {
+  if (event.kind.startsWith("exa_")) return <Search size={15} strokeWidth={1.8} />;
+  if (event.kind.startsWith("model_call_")) return <Activity size={15} strokeWidth={1.8} />;
+  if (event.kind.startsWith("solari_") || event.kind === "source_discovered") return <FileSearch size={15} strokeWidth={1.8} />;
+  if (event.kind === "agent_evaluation" || event.kind === "discussion_ready") return <Users size={15} strokeWidth={1.8} />;
+  return <Activity size={15} strokeWidth={1.8} />;
+}
+
+function EventDetails({ event }: { event: RunEvent }) {
+  const payload = event.payload;
+  if (!payload) return null;
+  if (event.kind.startsWith("exa_")) {
+    const query = typeof payload.query === "string" ? payload.query : null;
+    const acceptedCount = typeof payload.acceptedCount === "number" ? payload.acceptedCount : null;
+    const results = Array.isArray(payload.results) ? payload.results.slice(0, 8) : [];
+    return <>{query && <p className="studio-event-query">“{query}”</p>}{acceptedCount !== null && <span className="studio-event-measure">{acceptedCount} public sources accepted</span>}{results.length > 0 && <div className="studio-event-links">{results.map((result, index) => {
+      if (!result || typeof result !== "object") return null;
+      const item = result as Record<string, unknown>;
+      const url = safeSourceUrl(item.url);
+      if (!url) return null;
+      return <a key={`${url}-${index}`} href={url} target="_blank" rel="noopener noreferrer"><span>{typeof item.title === "string" && item.title.trim() ? item.title : new URL(url).hostname}</span><ExternalLink size={12} /></a>;
+    })}</div>}</>;
+  }
+  if (event.kind.startsWith("model_call_")) {
+    const operation = typeof payload.operation === "string" ? payload.operation : null;
+    const model = typeof payload.model === "string" ? payload.model : null;
+    return operation || model ? <p className="studio-event-query">{operation}{operation && model ? " · " : ""}{model}</p> : null;
+  }
+  if (event.kind === "solari_extract_started" || event.kind === "solari_extract_completed" || event.kind === "source_discovered") {
+    const title = typeof payload.title === "string" && payload.title.trim() ? payload.title : null;
+    const url = safeSourceUrl(payload.url);
+    const excerpt = event.kind === "source_discovered" && typeof payload.excerpt === "string" ? payload.excerpt : null;
+    const characters = typeof payload.extractedCharacters === "number" ? payload.extractedCharacters : null;
+    return <>{title && (url ? <a className="studio-event-source-link" href={url} target="_blank" rel="noopener noreferrer">{title}<ExternalLink size={12} /></a> : <p className="studio-event-query">{title}</p>)}{excerpt && <p className="studio-event-excerpt">{excerpt}</p>}{characters !== null && <span className="studio-event-measure">{characters.toLocaleString()} characters extracted</span>}</>;
+  }
+  if (event.kind === "agent_evaluation") {
+    const label = typeof payload.label === "string" ? payload.label : null;
+    const choice = readableChoice(payload.choice);
+    return label || choice ? <p className="studio-event-query">{label}{label && choice ? " · " : ""}{choice}</p> : null;
+  }
+  if (event.kind === "discussion_ready") {
+    const objection = typeof payload.objection === "string" ? payload.objection : null;
+    return objection ? <p className="studio-event-query">{objection}</p> : null;
+  }
+  return null;
+}
+
+function validAgentDiscussion(value: unknown): value is AgentDiscussion {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const discussion = value as Record<string, unknown>;
+  return typeof discussion.objection === "string" && typeof discussion.conclusion === "string" &&
+    Array.isArray(discussion.perspectives) && discussion.perspectives.every((item) =>
+      Boolean(item && typeof item === "object" && typeof item.contextId === "string" && typeof item.position === "string"));
+}
+
+function validSavedEvaluation(value: unknown): value is SavedAgentEvaluation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const evaluation = value as Record<string, unknown>;
+  return typeof evaluation.id === "string" && typeof evaluation.contextId === "string" &&
+    typeof evaluation.choice === "string" && typeof evaluation.rationale === "string" &&
+    (evaluation.uncertainty === undefined || typeof evaluation.uncertainty === "string") &&
+    Array.isArray(evaluation.objections) && evaluation.objections.every((item) => typeof item === "string") &&
+    Array.isArray(evaluation.evidenceIds) && evaluation.evidenceIds.every((item) => typeof item === "string");
 }
 
 type SurveyPhase = "preparing" | "approval" | "waiting" | "started";
@@ -256,14 +390,25 @@ function HomeDashboard({ emails, loading, refreshing, error, onRefresh, onOpenAn
 }) {
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const incomingCount = emails.filter(isIncoming).length;
   const analysisCount = emails.filter((email) => Boolean(email.runId)).length;
   const reviewCount = emails.filter(needsReview).length;
-  const selected = emails.find((email) => email.id === selectedId);
-  const visible = emails.filter((email) => filter === "all" ||
+  const search = query.trim().toLocaleLowerCase();
+  const visible = emails.filter((email) => (filter === "all" ||
     (filter === "incoming" && isIncoming(email)) ||
     (filter === "outgoing" && !isIncoming(email)) ||
-    (filter === "needs_review" && needsReview(email)));
+    (filter === "needs_review" && needsReview(email))) &&
+    (!search || [email.from, email.subject, email.preview, email.orderReference ?? "", email.status]
+      .some((value) => value.toLocaleLowerCase().includes(search))));
+  const selected = visible.find((email) => email.id === selectedId);
+  const detailRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = detailRef.current;
+    if (!dialog) return;
+    if (selected && !dialog.open) dialog.showModal();
+    if (!selected && dialog.open) dialog.close();
+  }, [selected]);
   const filters: Array<{ id: InboxFilter; label: string; count: number }> = [
     { id: "all", label: "All email", count: emails.length },
     { id: "incoming", label: "Incoming", count: incomingCount },
@@ -273,29 +418,31 @@ function HomeDashboard({ emails, loading, refreshing, error, onRefresh, onOpenAn
 
   return <div className="studio-home-page">
     <header className="studio-home-header">
-      <div><span className="studio-caps">ORIT / HOME</span><h1>Every email, one place.</h1><p>Incoming product ideas and outreach history flow into the same research workspace. A matched submission starts a saved analysis automatically.</p></div>
+      <div><span className="studio-home-page-icon" aria-hidden="true"><House size={27} strokeWidth={1.65} /></span><h1>Home</h1><p>Incoming ideas and outreach live here. Relevant product emails start a saved analysis automatically.</p></div>
       <button type="button" className="studio-home-refresh" onClick={() => void onRefresh()} disabled={refreshing} aria-label="Refresh email list"><RotateCw size={16} className={refreshing ? "studio-spin" : undefined} />{refreshing ? "Refreshing" : "Refresh"}</button>
     </header>
     <div className="studio-home-stat-row" aria-label="Email overview">
-      <div className="studio-home-stat"><span>Collected email</span><strong>{emails.length}</strong><small>Inbound and outreach</small></div>
-      <div className="studio-home-stat"><span>Incoming</span><strong>{incomingCount}</strong><small>Replies and submissions</small></div>
-      <div className="studio-home-stat"><span>Analyses started</span><strong>{analysisCount}</strong><small>Linked to saved runs</small></div>
+      <div className="studio-home-stat"><strong>{emails.length}</strong><span>Collected email</span></div>
+      <div className="studio-home-stat"><strong>{incomingCount}</strong><span>Incoming</span></div>
+      <div className="studio-home-stat"><strong>{analysisCount}</strong><span>Analyses started</span></div>
     </div>
     <section className="studio-home-inbox" aria-label="Collected email">
-      <div className="studio-home-toolbar"><div><span className="studio-caps">INBOX</span><h2>Collected email</h2></div><span>{emails.length} saved</span></div>
-      <div className="studio-home-filters" aria-label="Filter email">{filters.map((option) => <button key={option.id} type="button" className={filter === option.id ? "is-active" : ""} aria-pressed={filter === option.id} onClick={() => setFilter(option.id)}>{option.label}<span>{option.count}</span></button>)}</div>
+      <div className="studio-home-toolbar"><div><h2><Inbox size={20} strokeWidth={1.8} /> Inbox</h2><p>Collected messages and their research status</p></div><span>{visible.length} of {emails.length}</span></div>
+      <div className="studio-home-controls"><div className="studio-home-filters" aria-label="Filter email">{filters.map((option) => <button key={option.id} type="button" className={filter === option.id ? "is-active" : ""} aria-pressed={filter === option.id} onClick={() => setFilter(option.id)}>{option.label}<span>{option.count}</span></button>)}</div><label className="studio-home-search"><Search size={15} aria-hidden="true" /><span className="sr-only">Search email</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search email" /></label></div>
       {error && <div className="studio-home-error" role="alert">Email could not be loaded: {error} <button type="button" onClick={() => void onRefresh()}>Try again</button></div>}
       {loading && <div className="studio-home-empty" role="status"><RotateCw size={18} className="studio-spin" /><p>Loading saved email…</p></div>}
-      {!loading && !error && visible.length === 0 && <div className="studio-home-empty"><Inbox size={25} /><h3>{emails.length ? "No email in this view" : "Waiting for the first email"}</h3><p>{emails.length ? "Choose another filter to see the collected messages." : "Incoming submissions and outreach messages will appear here as they are collected."}</p></div>}
-      {!loading && visible.length > 0 && <div className="studio-home-table-wrap"><table className="studio-home-table"><caption className="sr-only">Collected inbound and outreach email</caption><thead><tr><th scope="col">Received</th><th scope="col">From</th><th scope="col">Email</th><th scope="col">Order</th><th scope="col">Status</th><th scope="col">Analysis</th></tr></thead><tbody>{visible.map((email) => <tr key={email.id} className={selectedId === email.id ? "is-selected" : ""}>
-        <td data-label="Received"><time dateTime={email.receivedAt}>{inboxDate(email.receivedAt)}</time></td>
+      {!loading && !error && visible.length === 0 && <div className="studio-home-empty"><Inbox size={25} /><h3>{search ? "No matching email" : emails.length ? "No email in this view" : "Waiting for the first email"}</h3><p>{search ? "Try a different search term." : emails.length ? "Choose another filter to see the collected messages." : "Incoming submissions and outreach messages will appear here as they are collected."}</p></div>}
+      {!loading && visible.length > 0 && <div className="studio-home-table-wrap"><table className="studio-home-table"><caption className="sr-only">Collected inbound and outreach email</caption><thead><tr><th scope="col">Email</th><th scope="col">From</th><th scope="col">Received</th><th scope="col">Status</th><th scope="col">Order</th><th scope="col">Analysis</th></tr></thead><tbody>{visible.map((email) => <tr key={email.id} className={selectedId === email.id ? "is-selected" : ""}>
+        <td data-label="Email"><button type="button" className="studio-home-subject" onClick={() => setSelectedId(email.id)} aria-haspopup="dialog">{email.subject || "(No subject)"}</button><span className="studio-home-preview">{email.preview || humanize(email.classification || "Email saved")}</span></td>
         <td data-label="From"><span className="studio-home-from">{email.from || "Unknown sender"}</span><span className="studio-home-direction">{isIncoming(email) ? "Incoming" : "Outreach"}</span></td>
-        <td data-label="Email"><button type="button" className="studio-home-subject" onClick={() => setSelectedId(selectedId === email.id ? null : email.id)} aria-expanded={selectedId === email.id}>{email.subject || "(No subject)"}</button><span className="studio-home-preview">{email.preview || humanize(email.classification || "Email saved")}</span></td>
-        <td data-label="Order">{email.orderReference ? <span className="studio-home-order">{email.orderReference}<small>Unverified</small></span> : <span className="studio-home-muted">—</span>}</td>
+        <td data-label="Received"><time dateTime={email.receivedAt}>{inboxDate(email.receivedAt)}</time></td>
         <td data-label="Status"><span className={`studio-home-status ${needsReview(email) ? "is-review" : email.runId ? "is-running" : ""}`}>{humanize(email.status || email.classification || "Saved")}</span></td>
+        <td data-label="Order">{email.orderReference ? <span className="studio-home-order">{email.orderReference}<small>Unverified</small></span> : <span className="studio-home-muted">—</span>}</td>
         <td data-label="Analysis">{email.runId ? <button type="button" className="studio-home-analysis-link" onClick={() => void onOpenAnalysis(email.runId!)}>Open analysis <ArrowRight size={14} /></button> : <span className="studio-home-muted">{email.status === "pending" || email.status === "processing" ? "Checking email" : "—"}</span>}</td>
       </tr>)}</tbody></table></div>}
-      {selected && <div className="studio-home-detail" aria-label="Selected email details"><div className="studio-home-detail-head"><div><span className="studio-caps">EMAIL DETAILS</span><h3>{selected.subject || "(No subject)"}</h3></div><button type="button" onClick={() => setSelectedId(null)} aria-label="Close email details"><X size={17} /></button></div><div className="studio-home-detail-grid"><div><span>From</span><strong>{selected.from || "Unknown sender"}</strong></div><div><span>Received</span><strong>{inboxDate(selected.receivedAt)}</strong></div><div><span>Classification</span><strong>{humanize(selected.classification || "Unclassified")}</strong></div><div><span>Order reference</span><strong>{selected.orderReference || "None saved"}</strong></div></div><p>{selected.preview || "No email preview was saved."}</p>{selected.runId && <button type="button" className="studio-home-analysis-link" onClick={() => void onOpenAnalysis(selected.runId!)}>Open linked analysis <ArrowRight size={15} /></button>}</div>}
+      <dialog ref={detailRef} className="studio-home-detail" aria-label="Selected email details" onClose={() => setSelectedId(null)} onClick={(event) => { if (event.target === detailRef.current) detailRef.current?.close(); }}>
+        {selected && <><div className="studio-home-detail-head"><div><span className="studio-caps">EMAIL DETAILS</span><h3>{selected.subject || "(No subject)"}</h3></div><button type="button" autoFocus onClick={() => detailRef.current?.close()} aria-label="Close email details"><X size={17} /></button></div><div className="studio-home-detail-grid"><div><span>From</span><strong>{selected.from || "Unknown sender"}</strong></div><div><span>Received</span><strong>{inboxDate(selected.receivedAt)}</strong></div><div><span>Classification</span><strong>{humanize(selected.classification || "Unclassified")}</strong></div><div><span>Order reference</span><strong>{selected.orderReference || "None saved"}</strong></div></div><p>{selected.preview || "No email preview was saved."}</p>{selected.runId && <button type="button" className="studio-home-analysis-link" onClick={() => { detailRef.current?.close(); void onOpenAnalysis(selected.runId!); }}>Open linked analysis <ArrowRight size={15} /></button>}</>}
+      </dialog>
     </section>
   </div>;
 }
@@ -314,12 +461,16 @@ export default function Workspace() {
   const [researchView, setResearchView] = useState<"explore" | "report">("explore");
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [selectedReportVersion, setSelectedReportVersion] = useState<number | null>(null);
+  const [expandedActivityRunId, setExpandedActivityRunId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [approving, setApproving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const conversationPaneRef = useRef<HTMLElement>(null);
+  const liveFeedAtBottomRef = useRef(true);
+  const renderedEventRef = useRef<{ runId: string; sequence: number } | null>(null);
   const lastSeqRef = useRef(0);
   const runIdRef = useRef<string | null>(null);
   const activeProjectIdRef = useRef<string | null>(null);
@@ -337,10 +488,11 @@ export default function Workspace() {
   const loadRun = useCallback(async (runId: string) => {
     const data = await api<RunSnapshot>(`/api/runs/${runId}`);
     if (runIdRef.current !== runId) return;
-    setSnapshot(data);
+    setSnapshot((previous) => previous?.run.id === runId
+      ? { ...data, events: mergeRunEvents(previous.events, data.events) } : data);
     setProjectRuns((previous) => previous.map((run) => run.id === runId
       ? { ...run, status: data.run.status, mode: data.run.mode } : run));
-    lastSeqRef.current = Math.max(0, ...data.events.map((event) => event.seq));
+    lastSeqRef.current = Math.max(lastSeqRef.current, 0, ...data.events.map((event) => event.seq));
     setPollError(null);
   }, []);
 
@@ -415,11 +567,13 @@ export default function Workspace() {
     const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
     const onStorage = (event: StorageEvent) => { if (event.key === WORKSPACE_UPDATE_KEY) refresh(); };
     refresh();
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 12_000);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("storage", onStorage);
     return () => {
       active = false;
+      window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("storage", onStorage);
@@ -429,6 +583,7 @@ export default function Workspace() {
   useEffect(() => {
     if (!activeRunId) return;
     runIdRef.current = activeRunId;
+    lastSeqRef.current = 0;
     let alive = true;
     let inFlight = false;
     let polls = 0;
@@ -439,10 +594,20 @@ export default function Workspace() {
       if (!alive || inFlight) return;
       inFlight = true;
       try {
-        const result = await api<{ events: RunEvent[]; lastSequence: number }>(`/api/runs/${activeRunId}/events?after=${lastSeqRef.current}`);
-        if (!alive) return;
+        let received = false;
+        for (let page = 0; page < 3; page += 1) {
+          const result = await api<{ events: RunEvent[]; lastSequence: number }>(`/api/runs/${activeRunId}/events?after=${lastSeqRef.current}`);
+          if (!alive || runIdRef.current !== activeRunId) return;
+          if (result.events.length) {
+            received = true;
+            lastSeqRef.current = result.lastSequence;
+            setSnapshot((previous) => previous?.run.id === activeRunId
+              ? { ...previous, events: mergeRunEvents(previous.events, result.events) } : previous);
+          }
+          if (result.events.length < 200) break;
+        }
         polls += 1;
-        if (result.events?.length || polls % 3 === 0) await loadRun(activeRunId);
+        if (received || polls % 3 === 0) await loadRun(activeRunId);
         setPollError(null);
       } catch (cause) {
         if (alive) setPollError(cause instanceof Error ? cause.message : "Connection interrupted.");
@@ -451,9 +616,21 @@ export default function Workspace() {
     return () => { alive = false; window.clearInterval(timer); };
   }, [activeRunId, loadRun]);
 
+  useEffect(() => {
+    if (!snapshot) { renderedEventRef.current = null; return; }
+    const sequence = snapshot.events.at(-1)?.seq ?? 0;
+    const previous = renderedEventRef.current;
+    renderedEventRef.current = { runId: snapshot.run.id, sequence };
+    if (!previous || previous.runId !== snapshot.run.id || sequence <= previous.sequence ||
+        !liveFeedAtBottomRef.current || snapshot.run.status !== "running") return;
+    const frame = window.requestAnimationFrame(() => conversationPaneRef.current?.scrollTo({ top: conversationPaneRef.current.scrollHeight, behavior: "smooth" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [snapshot]);
+
   async function openProject(project: Project) {
     const selection = ++projectSelectionRef.current;
     runIdRef.current = null;
+    lastSeqRef.current = 0;
     setSidebarOpen(false);
     setError(null);
     setSelectedSeq(null);
@@ -478,6 +655,7 @@ export default function Workspace() {
   function goHome() {
     projectSelectionRef.current += 1;
     runIdRef.current = null;
+    lastSeqRef.current = 0;
     setActiveProjectId(null);
     setProjectRuns([]);
     setActiveRunId(null);
@@ -493,6 +671,7 @@ export default function Workspace() {
   function openRun(runId: string) {
     if (runId === activeRunId) return;
     runIdRef.current = runId;
+    lastSeqRef.current = 0;
     setActiveRunId(runId);
     setSnapshot(null);
     setSelectedSeq(null);
@@ -548,7 +727,7 @@ export default function Workspace() {
   const savedRunInput = snapshot?.run.input && typeof snapshot.run.input === "object"
     ? snapshot.run.input as Record<string, unknown> : {};
   const runInputUrls = Array.isArray(savedRunInput.urls)
-    ? savedRunInput.urls.filter((url): url is string => typeof url === "string" && url.startsWith("https://")) : [];
+    ? savedRunInput.urls.filter((url): url is string => safeSourceUrl(url) !== null) : [];
   const rawImageIds = savedRunInput.imageAssetIds ?? savedRunInput.assetIds;
   const runInputImageIds = Array.isArray(rawImageIds)
     ? rawImageIds.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id)) : [];
@@ -556,6 +735,60 @@ export default function Workspace() {
   const mapSources = reportContent?.sources ?? (Array.isArray(evidenceData?.sources)
     ? evidenceData.sources.filter((source): source is { id: string; title: string; url: string } =>
       Boolean(source && typeof source.id === "string" && typeof source.title === "string" && typeof source.url === "string")) : []);
+  // Search events are committed before the complete evidence artifact, so sources can appear during a live run.
+  const liveSourceMap = new Map<string, { id: string; title: string; url: string; provider: string; excerpt?: string }>();
+  for (const event of activeEvents) {
+    if (event.kind === "exa_search_completed" || event.kind === "exa_contents_completed") {
+      const results = Array.isArray(event.payload?.results) ? event.payload.results : [];
+      for (const result of results) {
+        if (!result || typeof result !== "object") continue;
+        const item = result as Record<string, unknown>;
+        const url = safeSourceUrl(item.url);
+        if (!url) continue;
+        liveSourceMap.set(url, {
+          id: url, url, title: typeof item.title === "string" && item.title.trim() ? item.title : new URL(url).hostname,
+          provider: "Exa",
+        });
+      }
+    }
+    if (event.kind === "source_discovered") {
+      const url = safeSourceUrl(event.payload?.url);
+      if (!url) continue;
+      const previous = liveSourceMap.get(url);
+      liveSourceMap.set(url, {
+        id: typeof event.payload?.sourceId === "string" ? event.payload.sourceId : previous?.id ?? url,
+        url, title: typeof event.payload?.title === "string" && event.payload.title.trim() ? event.payload.title : previous?.title ?? new URL(url).hostname,
+        provider: typeof event.payload?.provider === "string" ? humanize(event.payload.provider) : previous?.provider ?? "Exa",
+        excerpt: typeof event.payload?.excerpt === "string" ? event.payload.excerpt : previous?.excerpt,
+      });
+    }
+  }
+  for (const source of mapSources) {
+    const url = safeSourceUrl(source.url);
+    if (url && !liveSourceMap.has(url)) {
+      const provider = "provider" in source && typeof source.provider === "string" ? humanize(source.provider) : "Saved source";
+      liveSourceMap.set(url, { id: source.id, url, title: source.title, provider });
+    }
+  }
+  const liveSources = [...liveSourceMap.values()];
+  const completedOperations = new Set(activeEvents.filter((event) =>
+    ["model_call_completed", "exa_search_completed", "solari_extract_completed"].includes(event.kind)
+    && typeof event.payload?.eventKey === "string"
+  ).map((event) => `${event.kind.replace(/_completed$/, "")}:${event.payload?.eventKey}`));
+  const stagesWithDetails = new Set(activeEvents.filter((event) => event.stage
+    && !["queued", "artifact", "stage_started", "stage_completed", "source_discovered"].includes(event.kind)
+    && !event.kind.endsWith("_started")).map((event) => event.stage));
+  const activityEvents = activeEvents.filter((event) => {
+    if (["queued", "artifact", "stage_started", "source_discovered"].includes(event.kind)) return false;
+    if (event.kind === "stage_completed") return !stagesWithDetails.has(event.stage);
+    if (["model_call_started", "exa_search_started", "solari_extract_started"].includes(event.kind)
+      && typeof event.payload?.eventKey === "string") {
+      return !completedOperations.has(`${event.kind.replace(/_started$/, "")}:${event.payload?.eventKey}`);
+    }
+    return true;
+  });
+  const visibleActivityEvents = expandedActivityRunId === snapshot?.run.id ? activityEvents : activityEvents.slice(-12);
+  const hiddenActivityCount = activityEvents.length - visibleActivityEvents.length;
   const visibleReport = selectedReportVersion === null ? snapshot?.report ?? null : snapshot?.reports?.find((report) => report.version === selectedReportVersion) ?? snapshot?.report ?? null;
   const reportReady = Boolean(reportContent);
   const isDeep = snapshot?.run.mode === "deep_simulation";
@@ -593,17 +826,33 @@ export default function Workspace() {
     const graphEvent = activeEvents.find((candidate) => candidate.kind === "artifact" && candidate.payload?.kind === "graph" && candidate.stage === event.stage && candidate.seq > event.seq);
     return { event, replaySeq: graphEvent?.seq ?? event.seq };
   });
+  const discussionSavedAtReplay = selectedSeq === null || activeEvents.some((event) =>
+    event.kind === "stage_completed" && event.stage === "discussion" && event.seq <= selectedSeq);
+  const discussionData = snapshot?.artifacts.find((artifact) => artifact.kind === "discussion" && artifact.key === "main")?.data;
+  const discussion = discussionSavedAtReplay && validAgentDiscussion(discussionData) ? discussionData : null;
+  const replayEvaluationIds = selectedSeq === null ? null : new Set(activeEvents
+    .filter((event) => event.kind === "agent_evaluation" && event.seq <= selectedSeq)
+    .map((event) => event.payload?.evaluationId).filter((id): id is string => typeof id === "string"));
+  const replayContextIds = selectedSeq === null ? null : new Set(activeEvents
+    .filter((event) => event.kind === "agent_evaluation" && event.seq <= selectedSeq)
+    .map((event) => event.payload?.contextId).filter((id): id is string => typeof id === "string"));
+  const savedEvaluations = snapshot?.artifacts
+    .filter((artifact) => artifact.kind === "evaluation" && validSavedEvaluation(artifact.data))
+    .map((artifact) => artifact.data as SavedAgentEvaluation)
+    .filter((evaluation) => replayEvaluationIds === null || replayEvaluationIds.has(evaluation.id) ||
+      replayContextIds?.has(evaluation.contextId) || graph?.nodes.some((node) => node.id === evaluation.id)) ?? [];
+  const isLiveRun = snapshot?.run.status === "running" || snapshot?.run.status === "queued";
 
   return <div className="studio-shell" id="top">
     <aside className={`studio-sidebar ${sidebarOpen ? "is-open" : ""}`}>
       <div className="studio-sidebar-head">
-        <button className="studio-brand" type="button" onClick={goHome} aria-label="Orit home">orit<b>.</b></button>
+        <button className="studio-brand" type="button" onClick={goHome} aria-label="Orit home">Orit</button>
         <button className="studio-mobile-close" type="button" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar"><X size={18} /></button>
       </div>
       <nav className="studio-view-tabs" aria-label="Workspace views">
         <button type="button" className={view === "home" ? "is-active" : ""} onClick={() => showView("home")}><House size={17} /> Home</button>
         <button type="button" className={view === "activity" ? "is-active" : ""} onClick={() => showView("activity")} disabled={!activeProjectId}><Activity size={17} /> Activity</button>
-        <button type="button" className={view === "explore" ? "is-active" : ""} onClick={() => showView("explore")} disabled={!activeProjectId}><Network size={17} /> Explore {activeProjectId && <span>{graph?.nodes.length ?? snapshot?.graph?.nodes.length ?? 0}</span>}</button>
+        <button type="button" className={view === "explore" ? "is-active" : ""} onClick={() => showView("explore")} disabled={!activeProjectId}><Network size={17} /> Agents</button>
         <button type="button" className={view === "report" ? "is-active" : ""} onClick={() => showView("report")} disabled={!activeProjectId}><FileText size={17} /> Report {reportReady && <span className="studio-tab-dot" />}</button>
       </nav>
       <div className="studio-sidebar-section">
@@ -613,7 +862,7 @@ export default function Workspace() {
             <span className="studio-project-icon"><FileText size={15} /></span><span><strong>{projectTitle(project)}</strong><small>{project.mode ? modeLabels[project.mode] : "Research project"}</small></span>
           </button>)}</div>}
       </div>
-      <div className="studio-sidebar-bottom"><div className="studio-sidebar-signal"><span className="studio-signal-dot" /> Local research workspace <span>·</span> US market</div></div>
+      <div className="studio-sidebar-bottom"><div className="studio-sidebar-signal"><span className="studio-signal-dot" /> Local workspace <span>·</span> US market</div></div>
     </aside>
 
     <main className="studio-main">
@@ -625,50 +874,55 @@ export default function Workspace() {
       {error && <div className="studio-global-error" role="alert"><strong>Action needed</strong><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><X size={16} /></button></div>}
       {activeProjectId && <nav className="studio-mobile-view-tabs" aria-label="Workspace views">
         <button type="button" className={view === "activity" ? "is-active" : ""} onClick={() => showView("activity")}><Activity size={16} /> Activity</button>
-        <button type="button" className={view === "explore" ? "is-active" : ""} onClick={() => showView("explore")}><Network size={16} /> Explore</button>
+        <button type="button" className={view === "explore" ? "is-active" : ""} onClick={() => showView("explore")}><Network size={16} /> Agents</button>
         <button type="button" className={view === "report" ? "is-active" : ""} onClick={() => showView("report")}><FileText size={16} /> Report</button>
       </nav>}
       <div className="studio-workspace-body" data-home={!activeProjectId ? "true" : undefined} data-mobile-view={view}>
-        <section className="studio-conversation-pane" aria-label={activeProjectId ? "Analysis activity" : "Email home"}>
+        <section className="studio-conversation-pane" ref={conversationPaneRef} onScroll={(event) => {
+          const pane = event.currentTarget;
+          liveFeedAtBottomRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
+        }} aria-label={activeProjectId ? "Research activity stream" : "Email home"}>
           {!activeProjectId ? <HomeDashboard emails={emails} loading={inboxLoading} refreshing={inboxRefreshing} error={inboxError} onRefresh={manualInboxRefresh} onOpenAnalysis={openInboxAnalysis} /> : <div className="studio-run-page">
             <div className="studio-run-header">
-              <div className="studio-run-breadcrumb"><button type="button" onClick={goHome}><ChevronLeft size={15} /> Home</button><span>/</span><span>{modeLabels[snapshot?.run.mode ?? activeProject?.mode ?? "light_research"]}</span></div>
-              <div className="studio-run-title-row"><div><span className="studio-caps">Project analysis</span><h1>{projectTitle(activeProject)}</h1></div><span className={`studio-status is-${snapshot?.run.status ?? "queued"}`}><span />{activeStatusLabel}</span></div>
+              <div className="studio-run-title-row"><button type="button" className="studio-run-back" onClick={goHome} aria-label="All analyses"><ChevronLeft size={17} /></button><h1>{projectTitle(activeProject)}</h1><span className={`studio-status is-${snapshot?.run.status ?? "queued"}`}><span />{activeStatusLabel}</span></div>
             </div>
             {projectRuns.length > 1 && <div className="studio-run-history"><label htmlFor="studio-run-version">Research run</label><select id="studio-run-version" value={activeRunId ?? ""} onChange={(event) => openRun(event.target.value)}>{projectRuns.map((run) => <option key={run.id} value={run.id}>Run v{run.version} · {run.id === activeRunId && snapshot ? activeStatusLabel : statusLabels[run.status ?? ""] ?? run.status ?? "Saved"}{run.id === projectRuns[0].id ? " · Latest" : ""}</option>)}</select>{viewingOlderRun && <button type="button" onClick={() => openRun(projectRuns[0].id)}>Latest <ArrowRight size={14} /></button>}</div>}
             {activeRunId && !snapshot ? <div className="studio-run-loading" role="status"><RotateCw size={20} className="studio-spin" /> Loading saved analysis…</div> : !snapshot ? <div className="studio-run-loading">No run found for this project.</div> : <>
               {pollError && <div className="studio-poll-warning" role="status">Updates paused: {pollError}. Retrying automatically.</div>}
               <div className="studio-chat-layout"><div className="studio-chat-main"><div className="studio-conversation">
-                <div className="studio-activity-intro"><span className="studio-caps">ACTIVITY / SAVED RUN</span><h2>How the research is progressing</h2><p>{snapshot.run.status === "integration_blocked" ? "The analysis needs a configured provider before it can continue." : reportReady ? "The report is ready. Open a saved stage to inspect the evidence behind it." : surveyPhase === "waiting" ? "The Tally survey is live. Agent research begins after the first matched Terac submission." : snapshot.run.status === "queued" ? "Research is queued. Each step appears here after it is saved." : "Each step below comes from a committed research event."}</p></div>
+                <div className="studio-activity-intro"><h2>Activity</h2><div className={`studio-activity-live ${isLiveRun ? "is-live" : ""}`} role="status"><span />{isLiveRun ? "Live" : "Saved"}</div></div>
                 {snapshot.run.status === "integration_blocked" && <div className="studio-state-banner is-blocked"><strong>Integration blocked</strong><p>{runError(snapshot.run.error) || activeEvents.findLast((event) => event.kind === "integration_blocked")?.payload?.message?.toString() || "A required provider credential or budget is unavailable. Configure it and start a new analysis."}</p></div>}
                 {snapshot.run.status === "failed" && <div className="studio-state-banner is-failed"><strong>Run failed</strong><p>{runError(snapshot.run.error) || "The worker stopped before completing this run."}</p></div>}
                 {snapshot.run.status === "needs_input" && <div className="studio-state-banner is-input"><strong>More detail needed</strong>{clarificationQuestions.length > 0 ? <ul>{clarificationQuestions.map((question, index) => <li key={`${index}-${question}`}>{question}</li>)}</ul> : <p>{clarification?.payload?.message?.toString() || "Add the missing detail to continue."}</p>}</div>}
-                <ResearchProgress key={`${snapshot.run.id}-${snapshot.run.status === "completed" ? "done" : "live"}`} run={snapshot.run} stages={stages} completedStages={completedStages} events={activeEvents} labels={stageLabels} describeEvent={eventText} onInspect={(sequence) => { setSelectedSeq(sequence); showView("explore"); }} />
+                <ResearchProgress key={snapshot.run.id} run={snapshot.run} stages={stages} completedStages={completedStages} events={activeEvents} labels={stageLabels} describeEvent={eventText} defaultExpanded={false} onInspect={(sequence) => { setSelectedSeq(sequence); showView("explore"); }} />
+                {liveSources.length > 0 && <details className="studio-source-shelf"><summary><span className="studio-source-shelf-title">Sources found</span><strong>{liveSources.length} saved</strong></summary><div className="studio-source-shelf-links">{liveSources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer" title={source.excerpt}><span>{source.title}<small>{source.provider} · {new URL(source.url).hostname}</small></span><ExternalLink size={12} /></a>)}</div></details>}
+                <span className="sr-only" role="status" aria-live="polite">{isLiveRun && activeEvents.length > 0 ? eventText(activeEvents[activeEvents.length - 1]) : ""}</span>
+                <div className="studio-stream-heading"><strong>Timeline</strong><span>{activityEvents.length} saved update{activityEvents.length === 1 ? "" : "s"}</span></div>
                 <div className="studio-activity-rail" aria-label="Saved analysis activity">
-                  <div className="studio-activity-entry is-complete"><span className="studio-activity-marker" /><div className="studio-activity-card"><div className="studio-activity-card-top"><strong><Mail size={14} /> Product idea received</strong><small>{snapshot.run.created_at ? inboxDate(snapshot.run.created_at) : "Saved"}</small></div><p>{displayIdea(activeProject?.idea)}</p>{(runInputUrls.length > 0 || runInputImageIds.length > 0) && <div className="studio-activity-actions">{runInputUrls.map((url) => <a href={url} target="_blank" rel="noopener noreferrer" key={url}>Source: {new URL(url).hostname}</a>)}{runInputImageIds.map((id, index) => <a href={`/api/assets/${id}`} target="_blank" rel="noopener noreferrer" key={id}>Image {index + 1}</a>)}</div>}</div></div>
-                  {activeEvents.map((event) => <div className={`studio-activity-entry ${event.kind === "stage_completed" ? "is-complete" : ""}`} key={event.seq}><span className="studio-activity-marker" /><button type="button" className="studio-activity-card" onClick={() => { setSelectedSeq(event.seq); showView("explore"); }}><span className="studio-activity-card-top"><strong>{event.stage ? stageLabels[event.stage] ?? humanize(event.stage) : "Research update"}</strong><small>{new Date(event.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small></span><p>{eventText(event)}</p><span className="studio-activity-source">Open saved evidence <ArrowRight size={13} /></span></button></div>)}
+                  <div className="studio-activity-entry"><details className="studio-activity-card"><summary className="studio-activity-summary"><span className="studio-activity-glyph"><Mail size={15} strokeWidth={1.8} /></span><strong>Product idea received</strong><time dateTime={snapshot.run.created_at}>{snapshot.run.created_at ? new Date(snapshot.run.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Saved"}</time></summary><div className="studio-activity-detail"><p>{displayIdea(activeProject?.idea)}</p>{(runInputUrls.length > 0 || runInputImageIds.length > 0) && <div className="studio-activity-actions">{runInputUrls.map((url) => <a href={url} target="_blank" rel="noopener noreferrer" key={url}>Source: {new URL(url).hostname}</a>)}{runInputImageIds.map((id, index) => <a href={`/api/assets/${id}`} target="_blank" rel="noopener noreferrer" key={id}>Image {index + 1}</a>)}</div>}</div></details></div>
+                  {hiddenActivityCount > 0 && <button type="button" className="studio-activity-more" onClick={() => setExpandedActivityRunId(snapshot.run.id)}>Show {hiddenActivityCount} earlier updates</button>}
+                  {visibleActivityEvents.map((event, index) => <div className={`studio-activity-entry ${isLiveRun && index === visibleActivityEvents.length - 1 ? "is-latest" : ""}`} key={event.seq}><details className="studio-activity-card"><summary className="studio-activity-summary"><span className="studio-activity-glyph"><EventGlyph event={event} /></span><strong title={eventHeadline(event)}>{eventHeadline(event)}</strong><time dateTime={event.created_at}>{new Date(event.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></summary><div className="studio-activity-detail"><span className="studio-activity-stage">{eventActor(event)} · {event.stage ? stageLabels[event.stage] ?? humanize(event.stage) : "Research"}</span>{eventHeadline(event) !== eventText(event) && <p>{eventText(event)}</p>}<EventDetails event={event} /><button type="button" className="studio-activity-open" onClick={() => { setSelectedSeq(event.seq); showView("explore"); }}>View saved stage <ArrowRight size={13} /></button></div></details></div>)}
                 </div>
                 {snapshot.run.status === "awaiting_approval" && snapshot.study && <OpportunityApprovalPanel key={snapshot.study.approvalFingerprint ?? snapshot.study.id} study={snapshot.study} assetIds={Array.isArray((snapshot.run.input as { assetIds?: unknown } | undefined)?.assetIds) ? (snapshot.run.input as { assetIds: string[] }).assetIds : []} busy={approving} refreshing={refreshing} onApprove={(quoteId, amountUsd, fingerprint) => approveStudy(snapshot.study!.id, quoteId, amountUsd, fingerprint)} onRefresh={() => refreshStudyPrice(snapshot.study!.id)} />}
                 {surveyPhase && surveyPhase !== "approval" && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}
                 {snapshot.run.status === "awaiting_humans" && reportReady && <div className="studio-state-banner is-waiting"><strong>Human feedback is in progress</strong><p>Your report is available now. A human-feedback addendum will appear after the remaining responses are reviewed.</p></div>}
                 {snapshot.run.mode === "deep_simulation" && reportContent?.metadata.humanStatus === "unavailable" && <div className="studio-state-banner is-waiting"><strong>Synthetic report complete</strong><p>Human feedback is unavailable in this local version. The Report tab shows the saved evidence and synthetic buyer results.</p></div>}
-                {reportReady && <button type="button" className="studio-report-teaser" onClick={() => showView("report")}><span><span className="studio-caps">Report v{snapshot.report?.version}</span><strong>{reportContent?.title}</strong><small>{reportContent?.verdictReason}</small></span><ArrowRight size={20} /></button>}
+                {reportReady && <button type="button" className="studio-report-teaser" onClick={() => showView("report")}><span><strong>View report</strong><small>Version {snapshot.report?.version}</small></span><ArrowRight size={17} /></button>}
               </div></div></div>
             </>}
           </div>}
         </section>
 
         <section className="studio-research-pane" data-research-view={researchView} aria-label="Research artifacts">
-          <div className="studio-research-header"><div><span className="studio-caps">RESEARCH</span><h2>{activeProjectId ? projectTitle(activeProject) : "Workspace"}</h2></div>
-            {activeProjectId && <nav className="studio-research-tabs" aria-label="Research views"><button type="button" className={researchView === "explore" ? "is-active" : ""} onClick={() => showView("explore")}><Network size={15} /> Explore</button><button type="button" className={researchView === "report" ? "is-active" : ""} onClick={() => showView("report")}><FileText size={15} /> Report</button></nav>}
+          <div className="studio-research-header"><div><h2>{researchView === "explore" ? "Agent harness" : "Research report"}</h2></div>
+            {activeProjectId && <nav className="studio-research-tabs" aria-label="Research views"><button type="button" className={researchView === "explore" ? "is-active" : ""} onClick={() => showView("explore")}><Network size={15} /> Harness</button><button type="button" className={researchView === "report" ? "is-active" : ""} onClick={() => showView("report")}><FileText size={15} /> Report</button></nav>}
           </div>
           {!activeProjectId ? <div className="studio-empty-research"><Network size={24} /><h2>Research appears here.</h2><p>When a product email starts an analysis, its saved evidence map, stages, and report appear beside the activity timeline.</p></div>
           : activeRunId && !snapshot ? <div className="studio-run-loading" role="status"><RotateCw size={20} className="studio-spin" /> Loading research artifacts…</div>
           : !snapshot ? <div className="studio-run-loading">No research run found.</div>
           : <>
-            <details className="studio-research-progress"><summary>Run progress · {stages.filter((stage) => completedStages.has(stage)).length} of {stages.length} stages <span>{activeStatusLabel}</span></summary><ol className="studio-stage-list">{stages.map((stage, index) => <li key={stage} className={`${completedStages.has(stage) ? "is-done" : snapshot.run.stage === stage ? "is-current" : ""}`}><span className="studio-stage-number">{String(index + 1).padStart(2, "0")}</span><span>{stageLabels[stage]}</span><span className="studio-stage-symbol">{completedStages.has(stage) ? "✓" : snapshot.run.stage === stage ? "↗" : ""}</span></li>)}</ol><p>Progress is reconstructed from saved run events.</p></details>
-            {researchView === "explore" ? <div className="studio-explore-page"><div className="studio-explore-toolbar"><div><span className="studio-caps">Inspectable simulation</span><h2>{surveyPhase && surveyPhase !== "started" ? "The map begins after a matched submission." : "See how buyers reached a decision."}</h2><p>{surveyPhase && surveyPhase !== "started" ? "The survey and first matched Terac submission will unlock the research stages." : "Explore saved synthetic evaluations and the evidence behind them."}</p></div>{(!surveyPhase || surveyPhase === "started") && <button type="button" onClick={() => setSelectedSeq(null)} className={selectedSeq === null ? "is-current" : ""}>Latest snapshot <ArrowRight size={15} /></button>}</div>{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{(!surveyPhase || surveyPhase === "started") && <ExploreMap graph={graph} sources={mapSources} />}{(!surveyPhase || surveyPhase === "started") && <div className="studio-timeline"><div><span className="studio-caps">Run history</span><h3>Replay completed stages</h3></div><div className="studio-timeline-scroll"><button type="button" className={selectedSeq === null ? "is-active" : ""} onClick={() => setSelectedSeq(null)}><span>NOW</span><strong>Latest</strong></button>{timelineEntries.map(({ event, replaySeq }) => <button type="button" key={event.seq} className={selectedSeq === replaySeq ? "is-active" : ""} onClick={() => setSelectedSeq(replaySeq)}><span>{String(event.seq).padStart(2, "0")}</span><strong>{stageLabels[event.stage ?? ""] ?? event.stage}</strong></button>)}</div></div>}</div>
-            : <div className="studio-report-page">{(snapshot.reports?.length ?? 0) > 1 && <div className="studio-report-versions"><span className="studio-caps">Report history</span><div>{snapshot.reports!.map((report) => <button type="button" key={report.id} className={(visibleReport?.version ?? 0) === report.version ? "is-active" : ""} onClick={() => setSelectedReportVersion(report.version)}>v{report.version} · {report.kind === "human_addendum" ? "Human addendum" : "Synthetic report"}</button>)}</div></div>}{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{surveyPhase && surveyPhase !== "started" ? null : <ReportView report={visibleReport} runId={snapshot.run.id} />}{snapshot.study && reportReady && snapshot.run.status !== "awaiting_approval" && <StudyReview studyId={snapshot.study.id} onReview={() => { announceWorkspaceUpdate(); return loadRun(snapshot.run.id); }} />}</div>}
+            {researchView === "explore" ? <div className="studio-explore-page">{selectedSeq !== null && <div className="studio-replay-status"><span>Viewing saved stage</span><button type="button" onClick={() => setSelectedSeq(null)}>Latest snapshot <ArrowRight size={14} /></button></div>}{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{(!surveyPhase || surveyPhase === "started") && <ExploreMap graph={graph} sources={mapSources} discussion={discussion} savedEvaluations={savedEvaluations} />}{(!surveyPhase || surveyPhase === "started") && <div className="studio-timeline"><div><span className="studio-caps">Run history</span><h3>Replay completed stages</h3></div><div className="studio-timeline-scroll"><button type="button" className={selectedSeq === null ? "is-active" : ""} onClick={() => setSelectedSeq(null)}><span>NOW</span><strong>Latest</strong></button>{timelineEntries.map(({ event, replaySeq }) => <button type="button" key={event.seq} className={selectedSeq === replaySeq ? "is-active" : ""} onClick={() => setSelectedSeq(replaySeq)}><span>{String(event.seq).padStart(2, "0")}</span><strong>{stageLabels[event.stage ?? ""] ?? event.stage}</strong></button>)}</div></div>}</div>
+            : <div className="studio-report-page">{(snapshot.reports?.length ?? 0) > 1 && <div className="studio-report-versions"><span className="studio-caps">Report history</span><div>{snapshot.reports!.map((report) => <button type="button" key={report.id} className={(visibleReport?.version ?? 0) === report.version ? "is-active" : ""} onClick={() => setSelectedReportVersion(report.version)}>v{report.version} · {report.kind === "human_addendum" ? "Human addendum" : "Synthetic report"}</button>)}</div></div>}{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{surveyPhase && surveyPhase !== "started" ? null : <ReportView report={visibleReport} runId={snapshot.run.id} delivery={snapshot.reportDeliveries?.find((item) => item.report_version === visibleReport?.version)} />}{snapshot.study && reportReady && snapshot.run.status !== "awaiting_approval" && <StudyReview studyId={snapshot.study.id} onReview={() => { announceWorkspaceUpdate(); return loadRun(snapshot.run.id); }} />}</div>}
           </>}
         </section>
       </div>

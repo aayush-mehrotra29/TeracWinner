@@ -74,7 +74,9 @@ export async function contentsExa(urls: string[]): Promise<{ results: ExaResult[
   const safeUrls = await Promise.all(urls.slice(0, 5).map(validatePublicHttpsUrl));
   if (!safeUrls.length) return { results: [], costUsd: 0, requestId: null };
   const raw = await request("/contents", {
-    urls: safeUrls,
+    // Contents accepts URLs as identifiers; the current HTTP contract names
+    // this field `ids` (the older `urls` alias is not documented).
+    ids: safeUrls,
     highlights: { maxCharacters: 2200 },
     text: { maxCharacters: 4000 },
   });

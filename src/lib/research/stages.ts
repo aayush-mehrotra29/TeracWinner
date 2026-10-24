@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { contentsExa, searchExa, type ExaResult } from "../providers/exa";
 import { extractWithSolari } from "../providers/solari";
 import { validatePublicHttpsUrl } from "../providers/public-url";
-import { IntegrationBlockedError } from "../providers/errors";
+import { IntegrationBlockedError, ProviderError } from "../providers/errors";
 import { badCitationIds, buildGraph, directionalVerdict, presentationOrder, pricingAnalysis, sourceSupportsPrice, tallyChoices } from "./algorithm";
 import { ResearchModels } from "./models";
 import { observeImages } from "./images";
@@ -50,20 +50,58 @@ export async function runEvidence(store: ResearchStore, run: RunRow, models: Res
     if (!priorPlan) await store.saveArtifact(run, "research_plan", "main", plan);
     const queries = plan.queries.slice(0, 3).filter((query) => query.trim());
     if (queries.length !== 3) throw new Error("Research planning did not produce three bounded queries");
-    const rawResults: Array<{ result: ExaResult; category: EvidenceSource["category"] }> = [];
+    const sources: EvidenceSource[] = [];
+    const seen = new Set<string>();
     const gaps: string[] = [];
+    const addSources = async (results: ExaResult[], category: EvidenceSource["category"]): Promise<Array<{ title: string; url: string }>> => {
+      const accepted: Array<{ title: string; url: string }> = [];
+      for (const result of results) {
+        let url: string;
+        try {
+          url = await validatePublicHttpsUrl(result.url);
+        } catch {
+          gaps.push("A non-public or inaccessible result URL was excluded");
+          continue;
+        }
+        if (seen.has(url)) continue;
+        const source: EvidenceSource = {
+          id: sourceId(url), url, title: result.title.slice(0, 250),
+          publishedAt: result.publishedDate, excerpt: result.excerpt.slice(0, 4000),
+          provider: "exa", fetchedAt: new Date().toISOString(), category,
+          limitations: result.textAvailable ? [] : ["No extracted passage was returned"],
+        };
+        // A source becomes visible as soon as its individual Exa result is
+        // committed, rather than after every search and extraction finishes.
+        await store.saveArtifact(run, "evidence_source", source.id, source);
+        await store.eventOnceKey(run, "source_discovered", "evidence", source.id, {
+          sourceId: source.id, title: source.title, url: source.url, provider: source.provider,
+          category: source.category, excerpt: source.excerpt.slice(0, 240),
+        });
+        seen.add(url);
+        sources.push(source);
+        accepted.push({ title: source.title, url: source.url });
+      }
+      return accepted;
+    };
     for (const [index, query] of queries.entries()) {
       const key = String(index);
       let response = await store.artifact<Awaited<ReturnType<typeof searchExa>>>(run.id, "exa_search", key);
       if (!response) {
         response = await store.paidCall({
           run, stage: "evidence", provider: "exa", operation: "search", key,
-          reserveUsd: 0.03, work: () => searchExa(query, 4),
+          reserveUsd: 0.03, work: async () => {
+            await store.eventOnceKey(run, "exa_search_started", "evidence", key, { provider: "exa", index, query });
+            return searchExa(query, 4);
+          },
           save: (value) => store.saveArtifact(run, "exa_search", key, value),
         });
       }
       const category = (["competitor", "price", "review"] as const)[index];
-      for (const result of response.results) rawResults.push({ result, category });
+      const results = await addSources(response.results, category);
+      await store.eventOnceKey(run, "exa_search_completed", "evidence", key, {
+        provider: "exa", index, query, resultCount: response.results.length,
+        acceptedCount: results.length, results,
+      });
     }
     const supplied = (run.input.urls ?? []).slice(0, 5);
     if (supplied.length) {
@@ -71,28 +109,20 @@ export async function runEvidence(store: ResearchStore, run: RunRow, models: Res
       if (!response) {
         response = await store.paidCall({
           run, stage: "evidence", provider: "exa", operation: "contents", key: "main",
-          reserveUsd: 0.1, work: () => contentsExa(supplied),
+          reserveUsd: 0.1, work: async () => {
+            await store.eventOnceKey(run, "exa_contents_started", "evidence", "main", {
+              provider: "exa", urlCount: supplied.length,
+            });
+            return contentsExa(supplied);
+          },
           save: (value) => store.saveArtifact(run, "exa_contents", "main", value),
         });
       }
-      for (const result of response.results) rawResults.push({ result, category: "other" });
-    }
-    const sources: EvidenceSource[] = [];
-    const seen = new Set<string>();
-    for (const { result, category } of rawResults) {
-      try {
-        const url = await validatePublicHttpsUrl(result.url);
-        if (seen.has(url)) continue;
-        seen.add(url);
-        sources.push({
-          id: sourceId(url), url, title: result.title.slice(0, 250),
-          publishedAt: result.publishedDate, excerpt: result.excerpt.slice(0, 4000),
-          provider: "exa", fetchedAt: new Date().toISOString(), category,
-          limitations: result.textAvailable ? [] : ["No extracted passage was returned"],
-        });
-      } catch {
-        gaps.push("A non-public or inaccessible result URL was excluded");
-      }
+      const results = await addSources(response.results, "other");
+      await store.eventOnceKey(run, "exa_contents_completed", "evidence", "main", {
+        provider: "exa", urlCount: supplied.length, resultCount: response.results.length,
+        acceptedCount: results.length, results,
+      });
     }
     const emptySource = sources.find((source) => !source.excerpt);
     if (emptySource && process.env.SOLARI_API_KEY) {
@@ -103,15 +133,27 @@ export async function runEvidence(store: ResearchStore, run: RunRow, models: Res
           const result = await store.paidCall({
             run, stage: "evidence", provider: "solari", operation: "extract", key: emptySource.id,
             reserveUsd: 0.25,
-            work: async () => ({ excerpt: await extractWithSolari(emptySource.url), costUsd: null, requestId: null }),
+            work: async () => {
+              await store.eventOnceKey(run, "solari_extract_started", "evidence", emptySource.id, {
+                provider: "solari", sourceId: emptySource.id, title: emptySource.title, url: emptySource.url,
+              });
+              return { excerpt: await extractWithSolari(emptySource.url), costUsd: null, requestId: null };
+            },
             save: (value) => store.saveArtifact(run, "solari_extract", emptySource.id, value.excerpt),
           });
           emptySource.excerpt = result.excerpt;
         }
         emptySource.provider = "solari";
         emptySource.limitations = [];
+        await store.saveArtifact(run, "evidence_source", emptySource.id, emptySource);
+        await store.eventOnceKey(run, "solari_extract_completed", "evidence", emptySource.id, {
+          provider: "solari", sourceId: emptySource.id, title: emptySource.title, url: emptySource.url,
+          excerpt: emptySource.excerpt.slice(0, 240), extractedCharacters: emptySource.excerpt.length,
+        });
       } catch (error) {
-        if (error instanceof IntegrationBlockedError) throw error;
+        // A provider extraction failure is an evidence gap. Persistence and
+        // accounting failures must stop the run instead of looking successful.
+        if (!(error instanceof ProviderError)) throw error;
         gaps.push(`Browser extraction failed for ${emptySource.url}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -183,15 +225,22 @@ export async function runContexts(store: ResearchStore, run: RunRow, models: Res
 }
 
 export async function runEvaluations(store: ResearchStore, run: RunRow, models: ResearchModels, intake: IntakeArtifact, evidence: EvidenceArtifact, world: WorldModelArtifact, contexts: BuyerContext[]): Promise<BuyerEvaluation[]> {
+  const announceEvaluation = (evaluation: BuyerEvaluation): Promise<void> => store.eventOnceKey(
+    run, "agent_evaluation", "evaluations", evaluation.contextId, {
+      contextId: evaluation.contextId, evaluationId: evaluation.id, choice: evaluation.choice,
+      label: contexts.find((context) => context.id === evaluation.contextId)?.label ?? evaluation.contextId,
+    },
+  );
   const evaluations = await store.stage(run, "evaluations", "evaluations", async () => {
     const results: BuyerEvaluation[] = [];
     for (const [index, context] of contexts.entries()) {
       const previous = await store.artifact<BuyerEvaluation>(run.id, "evaluation", context.id);
-      if (previous) { results.push(previous); continue; }
+      if (previous) { await announceEvaluation(previous); results.push(previous); continue; }
       const order = presentationOrder(index, intake.concepts.length);
       const shown = order.map((id) => ({ id, text: id === "concept_a" ? intake.concepts[0] : id === "concept_b" ? intake.concepts[1] : context.currentAlternative }));
       const value = await models.ask<Omit<BuyerEvaluation, "id" | "contextId" | "presentationOrder">>({
         stage: "evaluations", model: "gpt-6-luna", schemaName: "research_evaluation_v1", schema: schemas.evaluation,
+        activityLabel: context.label,
         instructions: `${groundedInstructions} Evaluate this one hypothetical buyer independently. Choose from the supplied options, or neither/insufficient_information. Do not assume a purchase. Do not see or infer other buyers' choices. Cite listed source IDs only when using external evidence.`,
         input: JSON.stringify({ context, shown, world: { assumptions: world.assumptions, imageObservations: world.imageObservations }, evidence: evidencePrompt(evidence, 8) }),
         maxOutputTokens: 650,
@@ -203,10 +252,12 @@ export async function runEvaluations(store: ResearchStore, run: RunRow, models: 
       };
       if (evaluation.choice === "concept_b" && intake.concepts.length < 2) throw new Error("Evaluation chose an absent second concept");
       await store.saveArtifact(run, "evaluation", context.id, evaluation);
+      await announceEvaluation(evaluation);
       results.push(evaluation);
     }
     return results;
   }, { intake, evidence, world, contexts });
+  for (const evaluation of evaluations) await announceEvaluation(evaluation);
   await store.saveGraph(run, "evaluations", buildGraph({ intake, evidence, world, contexts, evaluations }));
   return evaluations;
 }
@@ -236,6 +287,7 @@ export async function runSensitivities(store: ResearchStore, run: RunRow, models
         const baseline = evaluations.find((item) => item.contextId === context.id)!;
         const value = await models.ask<Omit<BuyerEvaluation, "id" | "contextId" | "presentationOrder">>({
           stage: "sensitivities", model: "gpt-6-luna", schemaName: "research_sensitivity_choice_v1", schema: schemas.evaluation,
+          activityLabel: `${change.variable} · ${context.label}`,
           instructions: `${groundedInstructions} Re-evaluate this single hypothetical buyer under exactly one stated change. Keep all other concept attributes, alternatives, and context fixed. Do not see other buyer results. Cite only supplied source IDs for external facts.`,
           input: JSON.stringify({ context, originalConcepts: intake.concepts, change, priorChoice: baseline.choice, evidence: evidencePrompt(evidence, 5) }),
           maxOutputTokens: 1200,
@@ -261,15 +313,20 @@ export async function runSensitivities(store: ResearchStore, run: RunRow, models
 }
 
 export async function runDiscussion(store: ResearchStore, run: RunRow, models: ResearchModels, intake: IntakeArtifact, evidence: EvidenceArtifact, contexts: BuyerContext[], evaluations: BuyerEvaluation[]): Promise<DiscussionArtifact> {
-  return store.stage(run, "discussion", "discussion", async () => {
+  const discussion = await store.stage(run, "discussion", "discussion", async () => {
     const value = await models.ask<Omit<DiscussionArtifact, "independentChoicesUnchanged">>({
       stage: "discussion", model: "gpt-6.1-sol", schemaName: "research_discussion_v1", schema: schemas.discussion,
       instructions: `${groundedInstructions} Run one bounded discussion about the strongest shared objection. Use at most four of the supplied buyer contexts and preserve their independently recorded choices. This discussion is interpretation, not additional votes.`,
       input: JSON.stringify({ intake, contexts, evaluations, evidenceClaims: evidence.claims }),
       maxOutputTokens: 1200,
     });
-    return { ...value, perspectives: value.perspectives.slice(0, 4).filter((item) => contexts.some((context) => context.id === item.contextId)), independentChoicesUnchanged: true };
+    return { ...value, perspectives: value.perspectives.slice(0, 4).filter((item) => contexts.some((context) => context.id === item.contextId)), independentChoicesUnchanged: true as const };
   }, { intake, evidence, contexts, evaluations });
+  await store.eventOnceKey(run, "discussion_ready", "discussion", "main", {
+    objection: discussion.objection, perspectives: discussion.perspectives,
+    conclusion: discussion.conclusion, independentChoicesUnchanged: discussion.independentChoicesUnchanged,
+  });
+  return discussion;
 }
 
 export async function runSynthesis(store: ResearchStore, run: RunRow, models: ResearchModels, intake: IntakeArtifact, evidence: EvidenceArtifact, world: WorldModelArtifact, contexts: BuyerContext[], evaluations: BuyerEvaluation[], scenarios: SensitivityScenario[], discussion: DiscussionArtifact | null): Promise<SynthesisOutput> {

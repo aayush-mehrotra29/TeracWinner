@@ -13,6 +13,22 @@ interface ModelCheckpoint<T> {
   costUsd: number;
 }
 
+const modelOperations: Record<string, string> = {
+  research_intake_v1: "Reading the idea",
+  research_queries_v1: "Planning Exa searches",
+  research_claims_v1: "Extracting source claims",
+  research_world_v1: "Building the research model",
+  research_image_v1: "Analyzing an image",
+  research_contexts_v1: "Creating buyer contexts",
+  research_evaluation_v1: "Evaluating a buyer context",
+  research_sensitivity_choice_v1: "Testing a sensitivity scenario",
+  research_discussion_v1: "Reviewing buyer objections",
+  research_synthesis_v1: "Synthesizing findings",
+  research_review_v1: "Checking the report",
+  human_addendum_v1: "Reviewing participant feedback",
+  research_followup_v1: "Answering from saved research",
+};
+
 export class ResearchModels {
   constructor(private readonly store: ResearchStore, private readonly run: RunRow) {}
 
@@ -27,6 +43,7 @@ export class ResearchModels {
     maxOutputTokens?: number;
     imageDataUrls?: string[];
     promptVersion?: string;
+    activityLabel?: string;
   }): Promise<T> {
     this.store.assertLease();
     if (this.run.input.paymentId) {
@@ -42,6 +59,12 @@ export class ResearchModels {
       schema: args.schema, instructions: args.instructions, input: args.input,
       maxOutputTokens, imageHashes,
     })).digest("hex");
+    const activity = {
+      model: args.model,
+      schemaName: args.schemaName,
+      operation: modelOperations[args.schemaName] ?? "Analyzing research",
+      ...(args.activityLabel ? { label: args.activityLabel.slice(0, 120) } : {}),
+    };
     const { data: prior, error: priorError } = await this.store.db.from("model_calls")
       .select("id,status").eq("run_id", this.run.id).eq("request_key", requestKey).maybeSingle();
     if (priorError) throw new Error(`Unable to inspect model-call journal: ${priorError.message}`);
@@ -54,6 +77,7 @@ export class ResearchModels {
         const { error } = await this.store.db.from("model_calls").update({ status: "completed" }).eq("id", prior.id);
         if (error) throw new Error(`Unable to finish cached model-call audit: ${error.message}`);
       }
+      await this.store.eventOnceKey(this.run, "model_call_completed", args.stage, requestKey, activity);
       const spent = await this.store.reconcileSpent(this.run);
       if (Number(this.run.budget_usd) > 0 && spent > Number(this.run.budget_usd)) {
         throw new IntegrationBlockedError("Research budget exhausted after the saved model call", "budget");
@@ -81,6 +105,7 @@ export class ResearchModels {
       input_tokens: 0, output_tokens: 0, cost_usd: 0, status: "pending", error: null,
     }).select("id").single();
     if (startError || !call) throw new Error(`Unable to journal model call before request: ${startError?.message ?? "missing"}`);
+    await this.store.eventOnceKey(this.run, "model_call_started", args.stage, requestKey, activity);
     let response;
     try {
       response = await structuredResponse<T>({
@@ -116,6 +141,7 @@ export class ResearchModels {
     } satisfies ModelCheckpoint<T>);
     const { error: finishError } = await this.store.db.from("model_calls").update({ status: "completed" }).eq("id", call.id);
     if (finishError) throw new Error(`Unable to complete model-call audit: ${finishError.message}`);
+    await this.store.eventOnceKey(this.run, "model_call_completed", args.stage, requestKey, activity);
     if (budget > 0 && spentAfter > budget) {
       throw new IntegrationBlockedError("Model call exceeded the remaining research budget; actual usage was recorded", "budget");
     }

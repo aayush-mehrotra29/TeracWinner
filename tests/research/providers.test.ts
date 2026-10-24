@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import dns from "node:dns/promises";
+import test, { mock } from "node:test";
+import { contentsExa } from "../../src/lib/providers/exa";
 import { ModelOutputError, structuredResponse } from "../../src/lib/providers/openai";
 import { privateAddress, validatePublicHttpsUrl } from "../../src/lib/providers/public-url";
 
@@ -63,4 +65,31 @@ test("private URLs and local hostnames cannot be sent for extraction", async () 
   assert.equal(privateAddress("::ffff:172.16.0.1"), true);
   assert.equal(privateAddress("::ffff:169.254.1.1"), true);
   assert.equal(privateAddress("::ffff:8.8.8.8"), false);
+});
+
+test("Exa Contents sends validated URLs in the documented ids field", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.EXA_API_KEY;
+  process.env.EXA_API_KEY = "test-key";
+  const lookup = mock.method(dns, "lookup", async () => [{ address: "8.8.8.8", family: 4 }]);
+  let body: Record<string, unknown> = {};
+  globalThis.fetch = (async (_url, init) => {
+    body = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      results: [{ id: "source-1", url: "https://source.invalid/page", title: "Source", highlights: ["Useful evidence"] }],
+      costDollars: { total: 0.002 }, requestId: "exa-1",
+    }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const result = await contentsExa(["https://source.invalid/page"]);
+    assert.deepEqual(body.ids, ["https://source.invalid/page"]);
+    assert.equal("urls" in body, false);
+    assert.equal(result.results[0].excerpt, "Useful evidence");
+    assert.equal(result.costUsd, 0.002);
+  } finally {
+    lookup.mock.restore();
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.EXA_API_KEY;
+    else process.env.EXA_API_KEY = originalKey;
+  }
 });

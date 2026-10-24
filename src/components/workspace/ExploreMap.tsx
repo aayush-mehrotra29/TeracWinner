@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlow, Background, Controls, Handle, MarkerType, MiniMap, Position, type Edge, type Node, type NodeProps, type Viewport } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ExternalLink, List, Network, Users, X } from "lucide-react";
-import AgentSimulationView from "./AgentSimulationView";
+import AgentSimulationView, { type AgentDiscussion, type SavedAgentEvaluation } from "./AgentSimulationView";
 import type { Graph, MapNode } from "./types";
 
 type ResearchFlowNode = Node<{ kind: string; label: string; summary: string; index: string }, "research">;
@@ -75,7 +75,7 @@ function makeFlow(graph: Graph): { nodes: ResearchFlowNode[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
-export default function ExploreMap({ graph, sources = [] }: { graph: Graph | null; sources?: { id: string; title?: string; url?: string }[] }) {
+export default function ExploreMap({ graph, sources = [], discussion = null, savedEvaluations = [] }: { graph: Graph | null; sources?: { id: string; title?: string; url?: string }[]; discussion?: AgentDiscussion | null; savedEvaluations?: SavedAgentEvaluation[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [preferredMode, setPreferredMode] = useState<"agents" | "map" | "list">("agents");
@@ -153,8 +153,8 @@ export default function ExploreMap({ graph, sources = [] }: { graph: Graph | nul
 
   return <div className={`studio-map-layout ${mode === "agents" ? "is-agents" : ""}`}>
     <div className="studio-map-stage">
-      <div className="studio-map-topbar"><div><span className="studio-caps">Inspectable simulation</span><strong>{agentCount > 0 ? `${agentCount} synthetic buyers` : `${graph.nodes.length} nodes`} <span>·</span> {graph.edges.length} connections</strong></div><div className="studio-segmented" role="group" aria-label="Explore visualization"><button type="button" className={mode === "agents" ? "is-active" : ""} onClick={() => { setFocusId(null); setPreferredMode("agents"); }} aria-label="Agent view" disabled={agentCount === 0}><Users size={15} /> Agents</button><button type="button" className={mode === "map" ? "is-active" : ""} onClick={() => { setFocusId(null); setPreferredMode("map"); }} aria-label="Graph view"><Network size={15} /> Map</button><button type="button" className={mode === "list" ? "is-active" : ""} onClick={() => { setFocusId(null); setPreferredMode("list"); }} aria-label="List view"><List size={15} /> List</button></div></div>
-      {mode === "agents" ? <AgentSimulationView graph={graph} sources={sources} onInspectEvidence={(nodeId) => { setSelectedId(nodeId); setFocusId(nodeId); setPreferredMode("map"); }} /> : mode === "list" ? <ul className="studio-map-list">
+      <div className="studio-map-topbar"><div><strong>{agentCount > 0 ? `${agentCount} buyers` : `${graph.nodes.length} nodes`}</strong></div><div className="studio-segmented" role="group" aria-label="Explore visualization"><button type="button" className={mode === "agents" ? "is-active" : ""} onClick={() => { setFocusId(null); setPreferredMode("agents"); }} aria-label="Agent view" disabled={agentCount === 0}><Users size={15} /> Agents</button><button type="button" className={mode === "map" ? "is-active" : ""} onClick={() => { setFocusId(null); setPreferredMode("map"); }} aria-label="Graph view"><Network size={15} /> Map</button><button type="button" className={mode === "list" ? "is-active" : ""} onClick={() => { setFocusId(null); setPreferredMode("list"); }} aria-label="List view"><List size={15} /> List</button></div></div>
+      {mode === "agents" ? <AgentSimulationView graph={graph} sources={sources} discussion={discussion} savedEvaluations={savedEvaluations} onInspectEvidence={(nodeId) => { setSelectedId(nodeId); setFocusId(nodeId); setPreferredMode("map"); }} /> : mode === "list" ? <ul className="studio-map-list">
         {[...graph.nodes].sort((a, b) => layerFor(a.kind) - layerFor(b.kind) || a.label.localeCompare(b.label)).map((node) => <li key={node.id}><button type="button" className={`studio-map-list-item ${selectedId === node.id ? "is-selected" : ""}`} onClick={() => setSelectedId(node.id)}><span>{kindName[node.kind.toLowerCase()] ?? node.kind.replaceAll("_", " ")}</span><strong>{node.label}</strong><small>{node.summary}</small></button></li>)}
       </ul> : <div className="studio-flow-canvas" ref={canvasRef} aria-label="Interactive research evidence map"><ReactFlow nodes={flow.nodes} edges={flow.edges} nodeTypes={nodeTypes} viewport={viewport} onViewportChange={setViewport} minZoom={0.2} maxZoom={1.6} nodesDraggable={false} nodesConnectable={false} elementsSelectable onNodeClick={(_event, node) => setSelectedId(node.id)} proOptions={{ hideAttribution: true }}><Background color="#e6e6e6" gap={24} size={1} /><Controls showInteractive={false} /><MiniMap nodeColor="#5d5d5d" zoomable pannable /></ReactFlow></div>}
     </div>

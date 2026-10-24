@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PDFDocument } from "pdf-lib";
+import { PDFDict, PDFDocument, PDFName, PDFString } from "pdf-lib";
 import { renderReportPdf } from "../../src/lib/report/pdf";
 import type { ReportContent } from "../../src/lib/research/types";
 
@@ -58,6 +58,22 @@ test("PDF includes the saved source identifiers and URLs", async (context) => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("source links are clickable and unsafe URLs are not active", async () => {
+  const content = report();
+  content.sources.push({ ...content.sources[0], id: "src:unsafe", url: "javascript:alert(1)" });
+  const document = await PDFDocument.load(await renderReportPdf(content));
+  const destinations = document.getPages().flatMap((page) => {
+    const annotations = page.node.Annots();
+    return annotations ? annotations.asArray().map((reference) => {
+      const annotation = document.context.lookup(reference, PDFDict);
+      const action = annotation.lookup(PDFName.of("A"), PDFDict);
+      return action.lookup(PDFName.of("URI"), PDFString).decodeText();
+    }) : [];
+  });
+  assert.ok(destinations.includes("https://example.com/product"));
+  assert.ok(destinations.every((destination) => destination.startsWith("https://")));
 });
 
 test("human addendum PDF preserves its reviewed answer excerpts", async (context) => {

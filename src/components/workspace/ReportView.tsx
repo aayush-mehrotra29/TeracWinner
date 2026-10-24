@@ -2,7 +2,7 @@
 
 import { ArrowDownToLine, ArrowUpRight, CheckCircle2, CircleHelp, ExternalLink, MoveRight, ShieldAlert } from "lucide-react";
 import type { ReportContent, ReportPoint } from "@/lib/research/types";
-import type { ReportVersion } from "./types";
+import type { ReportDelivery, ReportVersion } from "./types";
 
 export function asReportContent(report: ReportVersion | null): ReportContent | null {
   const content = report?.content;
@@ -55,7 +55,15 @@ function displayReportTitle(title: string): string {
   return `${title.slice(0, clauseEnd > 100 ? clauseEnd : wordEnd > 100 ? wordEnd : 135).trimEnd()}…`;
 }
 
-export default function ReportView({ report, runId }: { report: ReportVersion | null; runId: string }) {
+const deliveryLabel: Record<ReportDelivery["status"], string> = {
+  pending: "Email queued",
+  sending: "Sending email",
+  sent: "Email sent",
+  uncertain: "Email needs review",
+  skipped: "Email not sent",
+};
+
+export default function ReportView({ report, runId, delivery }: { report: ReportVersion | null; runId: string; delivery?: ReportDelivery | null }) {
   const content = asReportContent(report);
   if (!content) return <div className="studio-report-pending"><div className="studio-report-pending-mark"><CircleHelp size={28} /></div><span className="studio-caps">Report pending</span><h2>The analysis is still being assembled.</h2><p>Once a report version is saved, its findings and sources will appear here.</p></div>;
 
@@ -65,7 +73,7 @@ export default function ReportView({ report, runId }: { report: ReportVersion | 
 
   return <article className="studio-report">
     <header className="studio-report-hero">
-      <div className="studio-report-headerline"><span className="studio-caps">Analysis report / v{report?.version ?? content.metadata.reportVersion}</span><a className="studio-report-download" href={`/api/runs/${runId}/report?format=pdf&version=${report?.version ?? content.metadata.reportVersion}`}><ArrowDownToLine size={16} /> Download PDF</a></div>
+      <div className="studio-report-headerline"><span className="studio-caps">Analysis report / v{report?.version ?? content.metadata.reportVersion}{delivery && <> · {deliveryLabel[delivery.status]}</>}</span><a className="studio-report-download" href={`/api/runs/${runId}/report?format=pdf&version=${report?.version ?? content.metadata.reportVersion}`}><ArrowDownToLine size={16} /> Download PDF</a></div>
       <h2 title={content.title}>{displayReportTitle(content.title)}</h2>
       <div className="studio-verdict-row"><span className={`studio-verdict is-${content.verdict}`}>{verdictLabel}</span><span>{content.verdictReason}</span></div>
     </header>
