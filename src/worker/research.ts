@@ -2,6 +2,9 @@ import { loadEnvConfig } from "@next/env";
 import { randomUUID } from "node:crypto";
 import { processResearchRun } from "../lib/research/pipeline";
 import { ResearchStore } from "../lib/research/store";
+import { syncHostedInbox } from "../lib/outreach/hosted";
+import { syncSentMail } from "../lib/outreach/sent";
+import { handoffOneEmail } from "../lib/outreach/research-handoff";
 import { humanPollPage } from "./polling";
 
 loadEnvConfig(process.cwd());
@@ -10,9 +13,10 @@ const QUEUE_VISIBILITY_SECONDS = 600;
 const RUN_LEASE_SECONDS = 180;
 const MAX_DELIVERIES = 3;
 const POLL_INTERVAL_MS = 8_000;
-// Terac MCP has no webhook and this app runs only on localhost. Poll promptly
-// so the first matched Tally submission can release the saved deep-run gate.
-const HUMAN_POLL_INTERVAL_MS = 15_000;
+// Terac MCP has no webhook. Its observed rate limit is about one request per
+// minute, so polling faster delays the first matched submission behind 429s.
+const HUMAN_POLL_INTERVAL_MS = 75_000;
+const EMAIL_POLL_INTERVAL_MS = 15_000;
 let humanPollCursor = 0;
 
 interface ClaimedJob {
@@ -96,11 +100,49 @@ async function pollHumanStudies(store: ResearchStore): Promise<void> {
   }
 }
 
+async function pollEmailOnce(): Promise<boolean> {
+  let backlog = false;
+  try {
+    const result = await syncHostedInbox();
+    backlog = result.pending;
+  } catch (error) {
+    console.error(`Inbox collection failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    const result = await syncSentMail();
+    backlog = backlog || result.pending;
+  } catch (error) {
+    console.error(`Sent mail collection failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // Saved intakes are scanned separately. A crash between Gmail save and run
+  // creation is recovered on the next pass, even when Gmail itself is down.
+  for (let index = 0; index < 20; index += 1) {
+    try {
+      if (!await handoffOneEmail()) break;
+      backlog = true;
+    } catch (error) {
+      console.error(`Email research handoff failed: ${error instanceof Error ? error.message : String(error)}`);
+      break;
+    }
+  }
+  return backlog;
+}
+
+async function emailLoop(shouldStop: () => boolean): Promise<void> {
+  while (!shouldStop()) {
+    const backlog = await pollEmailOnce();
+    await new Promise((resolve) => setTimeout(resolve, backlog ? 1_000 : EMAIL_POLL_INTERVAL_MS));
+  }
+}
+
 async function main(): Promise<void> {
   const store = new ResearchStore();
   let stopped = false;
   process.on("SIGINT", () => { stopped = true; });
   process.on("SIGTERM", () => { stopped = true; });
+  void emailLoop(() => stopped).catch((error) => {
+    console.error(`Email poller stopped: ${error instanceof Error ? error.message : String(error)}`);
+  });
   let lastHumanPoll = 0;
   while (!stopped) {
     try {

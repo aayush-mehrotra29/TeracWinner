@@ -2,15 +2,28 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { Activity, ArrowRight, ChevronLeft, FileText, Link2, Menu, MessageCircle, Network, Plus, RotateCw, X } from "lucide-react";
+import { Activity, ArrowRight, ChevronLeft, FileText, House, Inbox, Mail, Menu, Network, RotateCw, X } from "lucide-react";
 import { DEEP_PARTICIPANT_TARGET } from "@/lib/research/deep-config";
-import Composer, { type FollowupInput, type StartInput } from "./Composer";
 import ExploreMap from "./ExploreMap";
+import ResearchProgress from "./ResearchProgress";
 import ReportView, { asReportContent } from "./ReportView";
 import StudyReview from "./StudyReview";
-import type { Graph, Message, Project, ReportVersion, ResearchMode, RunEvent, RunSnapshot, Study, WorkspaceView } from "./types";
+import type { Graph, Project, ResearchMode, RunEvent, RunSnapshot, Study, WorkspaceView } from "./types";
 
 type ProjectRun = { id: string; version: number; status?: string; mode?: ResearchMode; created_at?: string };
+type InboxEmail = {
+  id: string;
+  receivedAt: string;
+  from: string;
+  subject: string;
+  preview: string;
+  direction: string;
+  classification: string;
+  orderReference: string | null;
+  runId: string | null;
+  status: string;
+};
+type InboxFilter = "all" | "incoming" | "outgoing" | "needs_review";
 const WORKSPACE_UPDATE_KEY = "orit:workspace-updated-v1";
 
 function announceWorkspaceUpdate() {
@@ -48,17 +61,42 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function projectTitle(project: Project | undefined): string {
-  const title = project?.title?.trim() || project?.idea?.trim() || "Untitled analysis";
+  const title = (project?.title?.trim() || project?.idea?.trim() || "Untitled analysis")
+    .replace(/^#{1,6}\s+/, "").replaceAll("**", "").replace(/\s+/g, " ").trim();
   if (title.length <= 52) return title;
   const prefix = title.slice(0, 52);
   const wordEnd = prefix.lastIndexOf(" ");
   return `${prefix.slice(0, wordEnd > 30 ? wordEnd : 52).trimEnd()}…`;
 }
 
+function displayIdea(value: string | null | undefined): string {
+  return (value || "Idea saved with this project.")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "").replaceAll("**", "").trim();
+}
+
 function runError(error: unknown): string | null {
   if (typeof error === "string") return error;
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
   return null;
+}
+
+function humanize(value: string): string {
+  return value.replaceAll(/[_-]+/g, " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function inboxDate(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : "Date unavailable";
+}
+
+function isIncoming(email: InboxEmail): boolean {
+  return ["incoming", "inbound", "received"].includes(email.direction.toLowerCase());
+}
+
+function needsReview(email: InboxEmail): boolean {
+  return /needs|review|blocked|failed|unmatched/i.test(email.status);
 }
 
 function redactedMaterial(value: unknown, taskUrl?: string): unknown {
@@ -103,45 +141,6 @@ function teracDraftEditorUrl(study: Study): string | null {
     if (url.protocol === "https:" && (url.hostname === "terac.com" || url.hostname.endsWith(".terac.com"))) return url.href;
   } catch { /* An invalid provider URL is not shown as a link. */ }
   return null;
-}
-
-const reportCitationLabels: Record<string, string> = {
-  questionAnswers: "Decision answer", findings: "Key finding", strengths: "Reason to believe",
-  weaknesses: "Friction point", recommendations: "Recommendation", humanAddendum: "Human finding",
-};
-
-function citedReport(snapshot: RunSnapshot, message: Message): ReportVersion | null {
-  const versions = snapshot.reports ?? [];
-  const explicitVersion = message.report_version;
-  if (typeof explicitVersion === "number" && Number.isInteger(explicitVersion)) {
-    return versions.find((version) => version.version === explicitVersion) ?? null;
-  }
-  const byTimestamp = versions.filter((version) => version.created_at <= message.created_at)
-    .sort((a, b) => b.version - a.version)[0];
-  return byTimestamp ?? snapshot.report;
-}
-
-function MessageCitations({ ids, report, reportVersion, onOpenReport }: {
-  ids: string[] | null | undefined;
-  report: ReturnType<typeof asReportContent>;
-  reportVersion: number | null;
-  onOpenReport: (anchor: string, version: number | null) => void;
-}) {
-  if (!Array.isArray(ids) || ids.length === 0) return null;
-  if (!report) return <div className="studio-message-citations"><span>Saved citations</span><span>Referenced report version unavailable</span></div>;
-  const sources = report.sources;
-  const humanSources = report.humanAddendum?.sources ?? [];
-  return <div className="studio-message-citations" aria-label="Answer citations"><span>Saved citations</span>{[...new Set(ids)].map((id) => {
-    const source = sources.find((item) => item.id === id);
-    if (source) return <a key={id} href={source.url} target="_blank" rel="noopener noreferrer" title={source.title}>{source.title}</a>;
-    const human = humanSources.find((item) => item.id === id);
-    if (human) return <button type="button" key={id} onClick={() => onOpenReport(`human-source-${human.responseId}`, reportVersion)}>Reviewed response {humanSources.indexOf(human) + 1}</button>;
-    const match = /^report:(questionAnswers|findings|strengths|weaknesses|recommendations|humanAddendum):(\d+)$/.exec(id);
-    if (match) return <button type="button" key={id} onClick={() => onOpenReport(id, reportVersion)}>{reportCitationLabels[match[1]]} {Number(match[2]) + 1}</button>;
-    if (id === "report:nextExperiment:0") return <button type="button" key={id} onClick={() => onOpenReport(id, reportVersion)}>Next experiment</button>;
-    if (id === "report:pricing:0") return <button type="button" key={id} onClick={() => onOpenReport(id, reportVersion)}>Pricing analysis</button>;
-    return <span className="studio-message-citation-label" key={id}>Saved reference {id}</span>;
-  })}</div>;
 }
 
 function StudyMaterialsView({ materials, assetIds }: { materials: Record<string, unknown>; assetIds: string[] }) {
@@ -247,19 +246,75 @@ function OpportunityApprovalPanel({ study, assetIds, busy, refreshing, onApprove
     <button type="button" className="studio-study-approve" onClick={() => quote && study.approvalFingerprint && onApprove(quote.id, quote.amountUsd, study.approvalFingerprint)} disabled={busy || refreshing || !ready || !shareApproved}>{busy ? "Approving…" : isOpportunity ? `Approve ${displayedTotal} total and launch` : "Approve and launch paid study"}<ArrowRight size={16} /></button></div>;
 }
 
+function HomeDashboard({ emails, loading, refreshing, error, onRefresh, onOpenAnalysis }: {
+  emails: InboxEmail[];
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onOpenAnalysis: (runId: string) => Promise<void>;
+}) {
+  const [filter, setFilter] = useState<InboxFilter>("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const incomingCount = emails.filter(isIncoming).length;
+  const analysisCount = emails.filter((email) => Boolean(email.runId)).length;
+  const reviewCount = emails.filter(needsReview).length;
+  const selected = emails.find((email) => email.id === selectedId);
+  const visible = emails.filter((email) => filter === "all" ||
+    (filter === "incoming" && isIncoming(email)) ||
+    (filter === "outgoing" && !isIncoming(email)) ||
+    (filter === "needs_review" && needsReview(email)));
+  const filters: Array<{ id: InboxFilter; label: string; count: number }> = [
+    { id: "all", label: "All email", count: emails.length },
+    { id: "incoming", label: "Incoming", count: incomingCount },
+    { id: "outgoing", label: "Outreach", count: emails.length - incomingCount },
+    { id: "needs_review", label: "Needs review", count: reviewCount },
+  ];
+
+  return <div className="studio-home-page">
+    <header className="studio-home-header">
+      <div><span className="studio-caps">ORIT / HOME</span><h1>Every email, one place.</h1><p>Incoming product ideas and outreach history flow into the same research workspace. A matched submission starts a saved analysis automatically.</p></div>
+      <button type="button" className="studio-home-refresh" onClick={() => void onRefresh()} disabled={refreshing} aria-label="Refresh email list"><RotateCw size={16} className={refreshing ? "studio-spin" : undefined} />{refreshing ? "Refreshing" : "Refresh"}</button>
+    </header>
+    <div className="studio-home-stat-row" aria-label="Email overview">
+      <div className="studio-home-stat"><span>Collected email</span><strong>{emails.length}</strong><small>Inbound and outreach</small></div>
+      <div className="studio-home-stat"><span>Incoming</span><strong>{incomingCount}</strong><small>Replies and submissions</small></div>
+      <div className="studio-home-stat"><span>Analyses started</span><strong>{analysisCount}</strong><small>Linked to saved runs</small></div>
+    </div>
+    <section className="studio-home-inbox" aria-label="Collected email">
+      <div className="studio-home-toolbar"><div><span className="studio-caps">INBOX</span><h2>Collected email</h2></div><span>{emails.length} saved</span></div>
+      <div className="studio-home-filters" aria-label="Filter email">{filters.map((option) => <button key={option.id} type="button" className={filter === option.id ? "is-active" : ""} aria-pressed={filter === option.id} onClick={() => setFilter(option.id)}>{option.label}<span>{option.count}</span></button>)}</div>
+      {error && <div className="studio-home-error" role="alert">Email could not be loaded: {error} <button type="button" onClick={() => void onRefresh()}>Try again</button></div>}
+      {loading && <div className="studio-home-empty" role="status"><RotateCw size={18} className="studio-spin" /><p>Loading saved email…</p></div>}
+      {!loading && !error && visible.length === 0 && <div className="studio-home-empty"><Inbox size={25} /><h3>{emails.length ? "No email in this view" : "Waiting for the first email"}</h3><p>{emails.length ? "Choose another filter to see the collected messages." : "Incoming submissions and outreach messages will appear here as they are collected."}</p></div>}
+      {!loading && visible.length > 0 && <div className="studio-home-table-wrap"><table className="studio-home-table"><caption className="sr-only">Collected inbound and outreach email</caption><thead><tr><th scope="col">Received</th><th scope="col">From</th><th scope="col">Email</th><th scope="col">Order</th><th scope="col">Status</th><th scope="col">Analysis</th></tr></thead><tbody>{visible.map((email) => <tr key={email.id} className={selectedId === email.id ? "is-selected" : ""}>
+        <td data-label="Received"><time dateTime={email.receivedAt}>{inboxDate(email.receivedAt)}</time></td>
+        <td data-label="From"><span className="studio-home-from">{email.from || "Unknown sender"}</span><span className="studio-home-direction">{isIncoming(email) ? "Incoming" : "Outreach"}</span></td>
+        <td data-label="Email"><button type="button" className="studio-home-subject" onClick={() => setSelectedId(selectedId === email.id ? null : email.id)} aria-expanded={selectedId === email.id}>{email.subject || "(No subject)"}</button><span className="studio-home-preview">{email.preview || humanize(email.classification || "Email saved")}</span></td>
+        <td data-label="Order">{email.orderReference ? <span className="studio-home-order">{email.orderReference}<small>Unverified</small></span> : <span className="studio-home-muted">—</span>}</td>
+        <td data-label="Status"><span className={`studio-home-status ${needsReview(email) ? "is-review" : email.runId ? "is-running" : ""}`}>{humanize(email.status || email.classification || "Saved")}</span></td>
+        <td data-label="Analysis">{email.runId ? <button type="button" className="studio-home-analysis-link" onClick={() => void onOpenAnalysis(email.runId!)}>Open analysis <ArrowRight size={14} /></button> : <span className="studio-home-muted">{email.status === "pending" || email.status === "processing" ? "Checking email" : "—"}</span>}</td>
+      </tr>)}</tbody></table></div>}
+      {selected && <div className="studio-home-detail" aria-label="Selected email details"><div className="studio-home-detail-head"><div><span className="studio-caps">EMAIL DETAILS</span><h3>{selected.subject || "(No subject)"}</h3></div><button type="button" onClick={() => setSelectedId(null)} aria-label="Close email details"><X size={17} /></button></div><div className="studio-home-detail-grid"><div><span>From</span><strong>{selected.from || "Unknown sender"}</strong></div><div><span>Received</span><strong>{inboxDate(selected.receivedAt)}</strong></div><div><span>Classification</span><strong>{humanize(selected.classification || "Unclassified")}</strong></div><div><span>Order reference</span><strong>{selected.orderReference || "None saved"}</strong></div></div><p>{selected.preview || "No email preview was saved."}</p>{selected.runId && <button type="button" className="studio-home-analysis-link" onClick={() => void onOpenAnalysis(selected.runId!)}>Open linked analysis <ArrowRight size={15} /></button>}</div>}
+    </section>
+  </div>;
+}
+
 export default function Workspace() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [emails, setEmails] = useState<InboxEmail[]>([]);
+  const [inboxLoading, setInboxLoading] = useState(true);
+  const [inboxRefreshing, setInboxRefreshing] = useState(false);
+  const [inboxError, setInboxError] = useState<string | null>(null);
   const [projectRuns, setProjectRuns] = useState<ProjectRun[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<RunSnapshot | null>(null);
-  const [view, setView] = useState<WorkspaceView>("chat");
+  const [view, setView] = useState<WorkspaceView>("home");
   const [researchView, setResearchView] = useState<"explore" | "report">("explore");
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [selectedReportVersion, setSelectedReportVersion] = useState<number | null>(null);
   const [historyLoading, setHistoryLoading] = useState(true);
-  const [starting, setStarting] = useState(false);
-  const [sending, setSending] = useState(false);
   const [approving, setApproving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -271,12 +326,11 @@ export default function Workspace() {
   const latestRunIdRef = useRef<string | null>(null);
   const refreshSequenceRef = useRef(0);
   const projectSelectionRef = useRef(0);
-  const submissionRef = useRef<{ fingerprint: string; idempotencyKey: string; imageAssetIds: string[] } | null>(null);
-  const messageRequestRef = useRef<{ fingerprint: string; key: string; imageAssetIds: string[] } | null>(null);
 
   function showView(next: WorkspaceView) {
+    if (next === "home") { goHome(); return; }
     setView(next);
-    if (next !== "chat") setResearchView(next);
+    if (next === "explore" || next === "report") setResearchView(next);
     setSidebarOpen(false);
   }
 
@@ -289,6 +343,40 @@ export default function Workspace() {
     lastSeqRef.current = Math.max(0, ...data.events.map((event) => event.seq));
     setPollError(null);
   }, []);
+
+  const refreshInbox = useCallback(async () => {
+    try {
+      const result = await api<{ emails: InboxEmail[] }>("/api/inbox");
+      setEmails(Array.isArray(result.emails) ? result.emails : []);
+      setInboxError(null);
+    } catch (cause) {
+      setInboxError(cause instanceof Error ? cause.message : "Could not load collected email.");
+    } finally {
+      setInboxLoading(false);
+    }
+  }, []);
+
+  async function manualInboxRefresh() {
+    setInboxRefreshing(true);
+    try { await refreshInbox(); } finally { setInboxRefreshing(false); }
+  }
+
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") void refreshInbox(); };
+    const onStorage = (event: StorageEvent) => { if (event.key === WORKSPACE_UPDATE_KEY) refresh(); };
+    const initial = window.setTimeout(refresh, 0);
+    const timer = window.setInterval(refresh, 12_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [refreshInbox]);
 
   useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
   useEffect(() => { latestRunIdRef.current = projectRuns[0]?.id ?? null; }, [projectRuns]);
@@ -359,7 +447,7 @@ export default function Workspace() {
       } catch (cause) {
         if (alive) setPollError(cause instanceof Error ? cause.message : "Connection interrupted.");
       } finally { inFlight = false; }
-    }, 4000);
+    }, 2000);
     return () => { alive = false; window.clearInterval(timer); };
   }, [activeRunId, loadRun]);
 
@@ -370,7 +458,7 @@ export default function Workspace() {
     setError(null);
     setSelectedSeq(null);
     setSelectedReportVersion(null);
-    setView("chat");
+    setView("activity");
     setResearchView("explore");
     setActiveProjectId(project.id);
     setProjectRuns([]);
@@ -387,7 +475,7 @@ export default function Workspace() {
     }
   }
 
-  function newAnalysis() {
+  function goHome() {
     projectSelectionRef.current += 1;
     runIdRef.current = null;
     setActiveProjectId(null);
@@ -396,7 +484,7 @@ export default function Workspace() {
     setSnapshot(null);
     setSelectedSeq(null);
     setSelectedReportVersion(null);
-    setView("chat");
+    setView("home");
     setResearchView("explore");
     setError(null);
     setSidebarOpen(false);
@@ -409,86 +497,25 @@ export default function Workspace() {
     setSnapshot(null);
     setSelectedSeq(null);
     setSelectedReportVersion(null);
-    messageRequestRef.current = null;
     setError(null);
-    setView("chat");
+    setView("activity");
     setResearchView("explore");
   }
 
-  async function start(input: StartInput) {
-    if (starting) return;
-    setStarting(true);
+  async function openInboxAnalysis(runId: string) {
     setError(null);
     try {
-      const fingerprint = JSON.stringify({ ...input, files: input.files.map((file) => [file.name, file.size, file.lastModified, file.type]) });
-      if (!submissionRef.current || submissionRef.current.fingerprint !== fingerprint) {
-        submissionRef.current = { fingerprint, idempotencyKey: crypto.randomUUID(), imageAssetIds: [] };
-      }
-      const submission = submissionRef.current;
-      for (const file of input.files.slice(submission.imageAssetIds.length)) {
-        const form = new FormData();
-        form.set("file", file);
-        const result = await api<{ asset: { id: string } }>("/api/assets", { method: "POST", body: form });
-        submission.imageAssetIds.push(result.asset.id);
-      }
-      const payload = { idea: input.idea, mode: input.mode, concepts: input.concepts, urls: input.urls, imageAssetIds: submission.imageAssetIds, audience: input.audience, economics: input.economics };
-      const result = await api<{ project: Project; run: ProjectRun }>("/api/projects", {
-        method: "POST", headers: { "content-type": "application/json", "idempotency-key": submission.idempotencyKey }, body: JSON.stringify(payload),
-      });
-      refreshSequenceRef.current += 1;
-      announceWorkspaceUpdate();
-      submissionRef.current = null;
-      projectSelectionRef.current += 1;
-      runIdRef.current = result.run.id;
-      setProjects((previous) => [{ ...result.project, mode: input.mode }, ...previous.filter((item) => item.id !== result.project.id)]);
-      setProjectRuns([result.run]);
-      setActiveProjectId(result.project.id);
-      setSnapshot(null);
-      setSelectedSeq(null);
-      setSelectedReportVersion(null);
-      setView("chat");
-      setResearchView("explore");
-      setActiveRunId(result.run.id);
+      const linked = await api<RunSnapshot>(`/api/runs/${runId}`);
+      const project = linked.project ?? projects.find((item) => item.id === linked.run.project_id);
+      if (!project) throw new Error("The linked analysis project is unavailable.");
+      await openProject(project);
+      runIdRef.current = runId;
+      setActiveRunId(runId);
+      setSnapshot(linked);
+      setView("activity");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not start the analysis.");
-    } finally { setStarting(false); }
-  }
-
-  async function sendMessage(input: FollowupInput): Promise<boolean> {
-    if (!activeProjectId || !input.content.trim() || sending || activeRunId !== projectRuns[0]?.id ||
-      (!reportReady && snapshot?.run.status !== "needs_input")) return false;
-    setSending(true);
-    setError(null);
-    const content = input.content.trim();
-    const fingerprint = JSON.stringify({ projectId: activeProjectId, runId: activeRunId, content, mode: input.mode,
-      urls: input.urls, files: input.files.map((file) => [file.name, file.size, file.lastModified, file.type]) });
-    if (!messageRequestRef.current || messageRequestRef.current.fingerprint !== fingerprint) {
-      messageRequestRef.current = { fingerprint, key: crypto.randomUUID(), imageAssetIds: [] };
+      setError(cause instanceof Error ? cause.message : "Could not open the linked analysis.");
     }
-    try {
-      const submission = messageRequestRef.current;
-      for (const file of input.files.slice(submission.imageAssetIds.length)) {
-        const form = new FormData();
-        form.set("file", file);
-        const result = await api<{ asset: { id: string } }>("/api/assets", { method: "POST", body: form });
-        submission.imageAssetIds.push(result.asset.id);
-      }
-      const payload = { content, ...(input.urls.length ? { urls: input.urls } : {}),
-        ...(submission.imageAssetIds.length ? { imageAssetIds: submission.imageAssetIds } : {}),
-        ...(input.mode !== snapshot?.run.mode ? { mode: input.mode } : {}) };
-      const result = await api<{ message: Message; answer?: Message | string; run?: ProjectRun }>(`/api/projects/${activeProjectId}/messages`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": submission.key }, body: JSON.stringify(payload) });
-      announceWorkspaceUpdate();
-      messageRequestRef.current = null;
-      if (result.run?.id && result.run.id !== activeRunId) {
-        setProjectRuns((previous) => [result.run!, ...previous.filter((run) => run.id !== result.run!.id)].sort((a, b) => b.version - a.version));
-        openRun(result.run.id);
-      }
-      else if (activeRunId) await loadRun(activeRunId);
-      return true;
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not send your message.");
-      return false;
-    } finally { setSending(false); }
   }
 
   async function approveStudy(studyId: string, quoteId: string, amountUsd: number, approvalFingerprint: string) {
@@ -512,16 +539,6 @@ export default function Workspace() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not refresh the Terac price.");
     } finally { setRefreshing(false); }
-  }
-
-  function openReportCitation(anchor: string, version: number | null) {
-    setSelectedReportVersion(version);
-    showView("report");
-    window.setTimeout(() => {
-      const target = document.getElementById(anchor);
-      if (target instanceof HTMLDetailsElement) target.open = true;
-      target?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 80);
   }
 
   const activeProject = snapshot?.project ?? projects.find((project) => project.id === activeProjectId);
@@ -564,9 +581,10 @@ export default function Workspace() {
     : humanFirstDeep
       ? [studySetupStage, "terac_fieldwork", ...simulationStages, "human_addendum"]
       : [...simulationStages, ...(snapshot?.study ? [studySetupStage, "terac_fieldwork", "human_addendum"] : [])];
-  const completedStages = new Set(activeEvents.filter((event) => event.kind === "stage_completed").map((event) => event.stage));
+  const completedStages = new Set(activeEvents.filter((event) => event.kind === "stage_completed")
+    .map((event) => event.stage).filter((stage): stage is string => Boolean(stage)));
   if (firstHumanResponse) completedStages.add("terac_fieldwork");
-  const messages = (snapshot?.messages ?? []).filter((message) => message.run_id === snapshot?.run.id);
+  if (isDeep && (snapshot?.run.stage === "terac_fieldwork" || activeEvents.some((event) => event.stage === "terac_fieldwork"))) completedStages.add(studySetupStage);
   const viewingOlderRun = Boolean(activeRunId && projectRuns.length && activeRunId !== projectRuns[0].id);
   const clarification = activeEvents.findLast((event) => event.kind === "needs_input");
   const clarificationQuestions = Array.isArray(clarification?.payload?.questions)
@@ -579,12 +597,12 @@ export default function Workspace() {
   return <div className="studio-shell" id="top">
     <aside className={`studio-sidebar ${sidebarOpen ? "is-open" : ""}`}>
       <div className="studio-sidebar-head">
-        <button className="studio-brand" type="button" onClick={newAnalysis} aria-label="Orit home">orit<b>.</b></button>
+        <button className="studio-brand" type="button" onClick={goHome} aria-label="Orit home">orit<b>.</b></button>
         <button className="studio-mobile-close" type="button" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar"><X size={18} /></button>
       </div>
-      <button type="button" className="studio-new-button" onClick={newAnalysis}><Plus size={17} /> New analysis</button>
       <nav className="studio-view-tabs" aria-label="Workspace views">
-        <button type="button" className={view === "chat" ? "is-active" : ""} onClick={() => showView("chat")}><MessageCircle size={17} /> Chat</button>
+        <button type="button" className={view === "home" ? "is-active" : ""} onClick={() => showView("home")}><House size={17} /> Home</button>
+        <button type="button" className={view === "activity" ? "is-active" : ""} onClick={() => showView("activity")} disabled={!activeProjectId}><Activity size={17} /> Activity</button>
         <button type="button" className={view === "explore" ? "is-active" : ""} onClick={() => showView("explore")} disabled={!activeProjectId}><Network size={17} /> Explore {activeProjectId && <span>{graph?.nodes.length ?? snapshot?.graph?.nodes.length ?? 0}</span>}</button>
         <button type="button" className={view === "report" ? "is-active" : ""} onClick={() => showView("report")} disabled={!activeProjectId}><FileText size={17} /> Report {reportReady && <span className="studio-tab-dot" />}</button>
       </nav>
@@ -601,48 +619,41 @@ export default function Workspace() {
     <main className="studio-main">
       <header className="studio-topbar">
         <button type="button" className="studio-menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><Menu size={20} /></button>
-        <span className="studio-topbar-label">Orit / Research studio</span>
-        <div className="studio-topbar-right"><span className="studio-topbar-live"><span /> Evidence-led analysis</span></div>
+        <span className="studio-topbar-label">Orit / {activeProjectId ? projectTitle(activeProject) : "Home"}</span>
+        <div className="studio-topbar-right"><span className="studio-topbar-live"><span /> Email-led research</span></div>
       </header>
       {error && <div className="studio-global-error" role="alert"><strong>Action needed</strong><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><X size={16} /></button></div>}
       {activeProjectId && <nav className="studio-mobile-view-tabs" aria-label="Workspace views">
-        <button type="button" className={view === "chat" ? "is-active" : ""} onClick={() => showView("chat")}><MessageCircle size={16} /> Chat</button>
+        <button type="button" className={view === "activity" ? "is-active" : ""} onClick={() => showView("activity")}><Activity size={16} /> Activity</button>
         <button type="button" className={view === "explore" ? "is-active" : ""} onClick={() => showView("explore")}><Network size={16} /> Explore</button>
         <button type="button" className={view === "report" ? "is-active" : ""} onClick={() => showView("report")}><FileText size={16} /> Report</button>
       </nav>}
-      <div className="studio-workspace-body" data-mobile-view={view}>
-        <section className="studio-conversation-pane" aria-label="Research chat">
-          {!activeProjectId ? <div className="studio-start-page">
-            <div className="studio-start-content">
-              <div className="studio-start-intro"><span className="studio-caps">NEW ANALYSIS</span><h2>What would you like to research?</h2><p>Describe the product decision. Orit will gather evidence, run the selected analysis, and build a report you can inspect.</p></div>
-              <Composer onStart={start} busy={starting} />
-            </div>
-          </div> : <div className="studio-run-page">
+      <div className="studio-workspace-body" data-home={!activeProjectId ? "true" : undefined} data-mobile-view={view}>
+        <section className="studio-conversation-pane" aria-label={activeProjectId ? "Analysis activity" : "Email home"}>
+          {!activeProjectId ? <HomeDashboard emails={emails} loading={inboxLoading} refreshing={inboxRefreshing} error={inboxError} onRefresh={manualInboxRefresh} onOpenAnalysis={openInboxAnalysis} /> : <div className="studio-run-page">
             <div className="studio-run-header">
-              <div className="studio-run-breadcrumb"><button type="button" onClick={newAnalysis}><ChevronLeft size={15} /> All analyses</button><span>/</span><span>{modeLabels[snapshot?.run.mode ?? activeProject?.mode ?? "light_research"]}</span></div>
+              <div className="studio-run-breadcrumb"><button type="button" onClick={goHome}><ChevronLeft size={15} /> Home</button><span>/</span><span>{modeLabels[snapshot?.run.mode ?? activeProject?.mode ?? "light_research"]}</span></div>
               <div className="studio-run-title-row"><div><span className="studio-caps">Project analysis</span><h1>{projectTitle(activeProject)}</h1></div><span className={`studio-status is-${snapshot?.run.status ?? "queued"}`}><span />{activeStatusLabel}</span></div>
             </div>
-            {projectRuns.length > 1 && <div className="studio-run-history"><label htmlFor="studio-run-version">Research run</label><select id="studio-run-version" value={activeRunId ?? ""} onChange={(event) => openRun(event.target.value)} disabled={sending}>{projectRuns.map((run) => <option key={run.id} value={run.id}>Run v{run.version} · {run.id === activeRunId && snapshot ? activeStatusLabel : statusLabels[run.status ?? ""] ?? run.status ?? "Saved"}{run.id === projectRuns[0].id ? " · Latest" : ""}</option>)}</select>{viewingOlderRun && <button type="button" onClick={() => openRun(projectRuns[0].id)}>Latest <ArrowRight size={14} /></button>}</div>}
+            {projectRuns.length > 1 && <div className="studio-run-history"><label htmlFor="studio-run-version">Research run</label><select id="studio-run-version" value={activeRunId ?? ""} onChange={(event) => openRun(event.target.value)}>{projectRuns.map((run) => <option key={run.id} value={run.id}>Run v{run.version} · {run.id === activeRunId && snapshot ? activeStatusLabel : statusLabels[run.status ?? ""] ?? run.status ?? "Saved"}{run.id === projectRuns[0].id ? " · Latest" : ""}</option>)}</select>{viewingOlderRun && <button type="button" onClick={() => openRun(projectRuns[0].id)}>Latest <ArrowRight size={14} /></button>}</div>}
             {activeRunId && !snapshot ? <div className="studio-run-loading" role="status"><RotateCw size={20} className="studio-spin" /> Loading saved analysis…</div> : !snapshot ? <div className="studio-run-loading">No run found for this project.</div> : <>
               {pollError && <div className="studio-poll-warning" role="status">Updates paused: {pollError}. Retrying automatically.</div>}
               <div className="studio-chat-layout"><div className="studio-chat-main"><div className="studio-conversation">
-                <div className="studio-chat-date"><span />Analysis conversation<span /></div>
-                <div className="studio-chat-user"><span className="studio-chat-avatar">YOU</span><div><span className="studio-caps">Your idea</span><p>{activeProject?.idea || "Idea saved with this project."}</p></div></div>
-                <div className="studio-chat-system"><span className="studio-system-avatar"><Activity size={18} /></span><div><span className="studio-caps">Research system</span><p>{snapshot.run.status === "integration_blocked" ? "The analysis cannot continue until a required provider or budget is configured." : reportReady ? "A report version is ready. Inspect the map and report, or ask a question grounded in the saved findings." : surveyPhase === "preparing" ? `Orit is preparing the Tally survey and a ${DEEP_PARTICIPANT_TARGET}-person Terac opportunity. Agent research waits for the first matched submission.` : surveyPhase === "approval" ? "Review the Terac opportunity's current total and materials, then approve it here. Agent research will wait for the first matched submission." : surveyPhase === "waiting" ? "The Tally survey is live through Terac. Agent research begins after the first matched submission arrives." : surveyPhase === "started" ? "The first Terac submission has arrived. Agent research is underway." : snapshot.run.status === "queued" ? "Your run is queued. Stages will appear here as they are saved." : "The analysis is underway. Every update below comes from a saved run event."}</p></div></div>
+                <div className="studio-activity-intro"><span className="studio-caps">ACTIVITY / SAVED RUN</span><h2>How the research is progressing</h2><p>{snapshot.run.status === "integration_blocked" ? "The analysis needs a configured provider before it can continue." : reportReady ? "The report is ready. Open a saved stage to inspect the evidence behind it." : surveyPhase === "waiting" ? "The Tally survey is live. Agent research begins after the first matched Terac submission." : snapshot.run.status === "queued" ? "Research is queued. Each step appears here after it is saved." : "Each step below comes from a committed research event."}</p></div>
                 {snapshot.run.status === "integration_blocked" && <div className="studio-state-banner is-blocked"><strong>Integration blocked</strong><p>{runError(snapshot.run.error) || activeEvents.findLast((event) => event.kind === "integration_blocked")?.payload?.message?.toString() || "A required provider credential or budget is unavailable. Configure it and start a new analysis."}</p></div>}
                 {snapshot.run.status === "failed" && <div className="studio-state-banner is-failed"><strong>Run failed</strong><p>{runError(snapshot.run.error) || "The worker stopped before completing this run."}</p></div>}
                 {snapshot.run.status === "needs_input" && <div className="studio-state-banner is-input"><strong>More detail needed</strong>{clarificationQuestions.length > 0 ? <ul>{clarificationQuestions.map((question, index) => <li key={`${index}-${question}`}>{question}</li>)}</ul> : <p>{clarification?.payload?.message?.toString() || "Add the missing detail to continue."}</p>}</div>}
-                {activeEvents.length > 0 && <div className="studio-event-feed" aria-label="Saved run events">{activeEvents.map((event) => <button type="button" key={event.seq} className="studio-event" onClick={() => { setSelectedSeq(event.seq); showView("explore"); }}><span className={`studio-event-marker kind-${event.kind}`} /><span><small>{event.stage ? stageLabels[event.stage] ?? event.stage.replaceAll("_", " ") : "Run event"} · {new Date(event.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small><strong>{eventText(event)}</strong></span><ArrowRight size={15} /></button>)}</div>}
+                <ResearchProgress key={`${snapshot.run.id}-${snapshot.run.status === "completed" ? "done" : "live"}`} run={snapshot.run} stages={stages} completedStages={completedStages} events={activeEvents} labels={stageLabels} describeEvent={eventText} onInspect={(sequence) => { setSelectedSeq(sequence); showView("explore"); }} />
+                <div className="studio-activity-rail" aria-label="Saved analysis activity">
+                  <div className="studio-activity-entry is-complete"><span className="studio-activity-marker" /><div className="studio-activity-card"><div className="studio-activity-card-top"><strong><Mail size={14} /> Product idea received</strong><small>{snapshot.run.created_at ? inboxDate(snapshot.run.created_at) : "Saved"}</small></div><p>{displayIdea(activeProject?.idea)}</p>{(runInputUrls.length > 0 || runInputImageIds.length > 0) && <div className="studio-activity-actions">{runInputUrls.map((url) => <a href={url} target="_blank" rel="noopener noreferrer" key={url}>Source: {new URL(url).hostname}</a>)}{runInputImageIds.map((id, index) => <a href={`/api/assets/${id}`} target="_blank" rel="noopener noreferrer" key={id}>Image {index + 1}</a>)}</div>}</div></div>
+                  {activeEvents.map((event) => <div className={`studio-activity-entry ${event.kind === "stage_completed" ? "is-complete" : ""}`} key={event.seq}><span className="studio-activity-marker" /><button type="button" className="studio-activity-card" onClick={() => { setSelectedSeq(event.seq); showView("explore"); }}><span className="studio-activity-card-top"><strong>{event.stage ? stageLabels[event.stage] ?? humanize(event.stage) : "Research update"}</strong><small>{new Date(event.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small></span><p>{eventText(event)}</p><span className="studio-activity-source">Open saved evidence <ArrowRight size={13} /></span></button></div>)}
+                </div>
                 {snapshot.run.status === "awaiting_approval" && snapshot.study && <OpportunityApprovalPanel key={snapshot.study.approvalFingerprint ?? snapshot.study.id} study={snapshot.study} assetIds={Array.isArray((snapshot.run.input as { assetIds?: unknown } | undefined)?.assetIds) ? (snapshot.run.input as { assetIds: string[] }).assetIds : []} busy={approving} refreshing={refreshing} onApprove={(quoteId, amountUsd, fingerprint) => approveStudy(snapshot.study!.id, quoteId, amountUsd, fingerprint)} onRefresh={() => refreshStudyPrice(snapshot.study!.id)} />}
                 {surveyPhase && surveyPhase !== "approval" && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}
                 {snapshot.run.status === "awaiting_humans" && reportReady && <div className="studio-state-banner is-waiting"><strong>Human feedback is in progress</strong><p>Your report is available now. A human-feedback addendum will appear after the remaining responses are reviewed.</p></div>}
                 {snapshot.run.mode === "deep_simulation" && reportContent?.metadata.humanStatus === "unavailable" && <div className="studio-state-banner is-waiting"><strong>Synthetic report complete</strong><p>Human feedback is unavailable in this local version. The Report tab shows the saved evidence and synthetic buyer results.</p></div>}
                 {reportReady && <button type="button" className="studio-report-teaser" onClick={() => showView("report")}><span><span className="studio-caps">Report v{snapshot.report?.version}</span><strong>{reportContent?.title}</strong><small>{reportContent?.verdictReason}</small></span><ArrowRight size={20} /></button>}
-                {messages.filter((message) => message.content !== activeProject?.idea).map((message) => {
-                  const version = citedReport(snapshot, message);
-                  return <div key={message.id} className={`studio-chat-message is-${message.role}`}><span className="studio-caps">{message.role === "user" ? "You" : "Report answer"}</span><p>{message.content}</p>{message.role === "user" && message.idempotency_key === snapshot.run.idempotency_key && (runInputUrls.length > 0 || runInputImageIds.length > 0) && <div className="studio-chat-materials"><span>Research inputs for this run</span><div>{runInputUrls.map((url) => <a href={url} target="_blank" rel="noopener noreferrer" key={url}><Link2 size={13} />{new URL(url).hostname}</a>)}{runInputImageIds.map((id, index) => <a href={`/api/assets/${id}`} target="_blank" rel="noopener noreferrer" className="is-image" key={id}><Image unoptimized src={`/api/assets/${id}`} width={22} height={22} alt="" />Image {index + 1}</a>)}</div></div>}{message.role === "assistant" && <MessageCitations ids={message.citations} report={asReportContent(version)} reportVersion={version?.version ?? null} onOpenReport={openReportCitation} />}</div>;
-                })}
-              </div>{viewingOlderRun ? <div className="studio-followup studio-followup-archived"><p>This is a saved earlier run. Its answers and citations refer to the report shown here.</p><button type="button" onClick={() => openRun(projectRuns[0].id)}>Go to the latest run to ask a question <ArrowRight size={15} /></button></div> : !reportReady && snapshot.run.status !== "needs_input" ? <div className="studio-followup studio-followup-archived"><p>{snapshot.run.status === "integration_blocked" ? "Questions will be available after the required integration or budget is configured and a report is complete." : snapshot.run.status === "failed" ? "This run did not produce a report. Start a new analysis to try again." : surveyPhase === "waiting" ? "The chat opens for report questions after the first matched Terac submission starts agent research and the report is saved." : "Questions will be available as soon as the saved report is ready."}</p></div> : <Composer key={snapshot.run.id} kind="followup" onFollowup={sendMessage} busy={sending} initialMode={snapshot.run.mode} canAddResearch={reportReady} existingUrls={runInputUrls} existingImageCount={runInputImageIds.length} />}</div></div>
+              </div></div></div>
             </>}
           </div>}
         </section>
@@ -651,7 +662,7 @@ export default function Workspace() {
           <div className="studio-research-header"><div><span className="studio-caps">RESEARCH</span><h2>{activeProjectId ? projectTitle(activeProject) : "Workspace"}</h2></div>
             {activeProjectId && <nav className="studio-research-tabs" aria-label="Research views"><button type="button" className={researchView === "explore" ? "is-active" : ""} onClick={() => showView("explore")}><Network size={15} /> Explore</button><button type="button" className={researchView === "report" ? "is-active" : ""} onClick={() => showView("report")}><FileText size={15} /> Report</button></nav>}
           </div>
-          {!activeProjectId ? <div className="studio-empty-research"><Network size={24} /><h2>Research appears here.</h2><p>After you start an analysis, explore the saved evidence map, inspect each decision stage, and read the report beside your chat.</p></div>
+          {!activeProjectId ? <div className="studio-empty-research"><Network size={24} /><h2>Research appears here.</h2><p>When a product email starts an analysis, its saved evidence map, stages, and report appear beside the activity timeline.</p></div>
           : activeRunId && !snapshot ? <div className="studio-run-loading" role="status"><RotateCw size={20} className="studio-spin" /> Loading research artifacts…</div>
           : !snapshot ? <div className="studio-run-loading">No research run found.</div>
           : <>

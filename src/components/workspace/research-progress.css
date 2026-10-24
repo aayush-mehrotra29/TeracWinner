@@ -1,0 +1,111 @@
+.studio-progress-card {
+  margin: 18px 24px 3px;
+  padding: 16px 17px 15px;
+  border: 1px solid #dfe8ea;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.studio-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.studio-progress-meta > span:last-child {
+  color: #7b8a8f;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.studio-progress-trigger {
+  min-height: 28px;
+  gap: 8px;
+  color: #1c2b30;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.studio-progress-trigger:hover { color: #1b6981; }
+.studio-progress-trigger [data-shimmer] { font-size: 13px; font-weight: 600; }
+.studio-progress-trigger > span:last-child > svg { opacity: .65; }
+
+.studio-progress-content {
+  margin-top: 14px;
+  padding-top: 4px;
+  border-top: 1px solid #edf1f2;
+}
+
+.studio-progress-step { min-height: 33px; padding: 8px 0 9px; }
+.studio-progress-step:last-child { padding-bottom: 0; }
+.studio-progress-step-title { color: #64757a; font-size: 12px; line-height: 1.4; }
+.studio-progress-step-title [data-shimmer] { font-size: 12px; line-height: 1.4; }
+.studio-progress-step-title > span:last-child > svg { opacity: .42; }
+.studio-progress-step-title:hover { color: #263940; }
+.studio-progress-step.is-completed .studio-progress-step-title { color: #34484f; }
+.studio-progress-step.is-active .studio-progress-step-title { color: #175f78; font-weight: 600; }
+.studio-progress-step.is-error .studio-progress-step-title { color: #a34c45; }
+.studio-progress-step.is-pending .studio-progress-step-title { color: #91a0a4; }
+.studio-progress-step-title > div:first-child { color: #2186aa; }
+.studio-progress-step.is-pending .studio-progress-step-title > div:first-child { color: #aebbc0; }
+.studio-progress-step.is-error .studio-progress-step-title > div:first-child { color: #bb655b; }
+.studio-progress-step > div:last-child:not([data-slot="chain-of-thought-step-content"]) { background: #dce5e8; }
+
+.studio-progress-step-content { margin-top: 7px; margin-left: 24px; }
+.studio-progress-step-content p { margin: 0; color: #617279; font-size: 11px; line-height: 1.5; }
+.studio-progress-step-content button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #26718a;
+  font-size: 11px;
+  font-weight: 600;
+}
+.studio-progress-step-content button:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+.studio-progress-complete {
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid #edf1f2;
+  color: #547078;
+  font-size: 11px;
+}
+.studio-progress-complete svg { color: #2186aa; }
+
+.studio-progress-chain [data-slot="chain-of-thought-content"][data-state="open"],
+.studio-progress-chain [data-slot="chain-of-thought-step-content"][data-state="open"] {
+  animation: studio-progress-expand 200ms ease-out;
+}
+.studio-progress-chain [data-slot="chain-of-thought-content"][data-state="closed"],
+.studio-progress-chain [data-slot="chain-of-thought-step-content"][data-state="closed"] {
+  animation: studio-progress-collapse 160ms ease-in;
+}
+.studio-progress-spin { animation: studio-progress-rotate 1.1s linear infinite; }
+
+@keyframes studio-progress-expand {
+  from { height: 0; opacity: .6; }
+  to { height: var(--radix-collapsible-content-height); opacity: 1; }
+}
+@keyframes studio-progress-collapse {
+  from { height: var(--radix-collapsible-content-height); opacity: 1; }
+  to { height: 0; opacity: .6; }
+}
+@keyframes studio-progress-rotate { to { transform: rotate(360deg); } }
+
+@media (max-width: 600px) {
+  .studio-progress-card { margin: 14px 14px 3px; padding: 14px; }
+  .studio-progress-meta { align-items: flex-start; }
+  .studio-progress-meta > span:last-child { white-space: normal; text-align: right; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-progress-chain [data-slot="chain-of-thought-content"],
+  .studio-progress-chain [data-slot="chain-of-thought-step-content"],
+  .studio-progress-spin { animation: none !important; }
+}

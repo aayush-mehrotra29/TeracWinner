@@ -1,6 +1,6 @@
 # Orit Research Studio
 
-A chat-first product research application. Describe one product decision, add up to two concepts, five public HTTPS URLs, and four images, then choose one of three modes:
+An email-first product research application. Product-idea emails appear on Home and start an analysis automatically. Each analysis has an activity timeline, inspectable research map, and report.
 
 | Mode | Output |
 | --- | --- |
@@ -8,18 +8,19 @@ A chat-first product research application. Describe one product decision, add up
 | Light simulation | Research, eight hypothetical buyer contexts, sensitivity tests, an inspectable map, and a directional report |
 | Deep simulation | A product-specific Tally questionnaire and five-person Terac opportunity; review Terac's actual total before launch, then research and simulation start after the first matched submission |
 
-Synthetic counts are labeled **share of synthetic agents in this run**. They are not market share, purchase probabilities, or a representative survey. The report records sources, assumptions, model versions, and limitations. Gmail, calling, outreach, and payment collection are outside this release.
+Synthetic counts are labeled **share of synthetic agents in this run**. They are not market share, purchase probabilities, or a representative survey. The report records sources, assumptions, model versions, and limitations. Calling and payment collection are outside this release.
 
 ## Architecture
 
-- Next.js 16 and React provide the chat, graph, report, and narrow API routes. This local release opens directly into the workspace without sign-in.
+- Next.js 16 and React provide Home, the analysis activity timeline, graph, report, and narrow API routes. This local release opens directly into the workspace without sign-in.
 - A separate long-running Node worker consumes a Postgres-backed Supabase Queue. It persists stage checkpoints, run events, provider usage, graph artifacts, and report versions.
 - OpenAI Responses uses `gpt-6-luna` for specialist work and `gpt-6.1-sol` for synthesis and review. Exa supplies public evidence; Solari is a selective fallback for pages Exa cannot extract. Tally MCP builds respondent forms, and Terac MCP manages the separate human study.
 - One server-side local workspace identity is shared across tabs and browser sessions on this computer. Server routes use a server-only Supabase key and scope every project read and write to that identity; images and PDFs live in private Storage buckets. The development and production scripts bind to `127.0.0.1` because this release has no login screen.
+- The local worker collects Gmail Inbox and Sent messages in OritApp. A retryable bridge creates one research run per relevant incoming product-idea email. The ported outbound agent is optional and disabled until prior send and suppression history is reconciled.
 
 ## Setup
 
-Use Node.js 20.9 or newer. Install dependencies and copy the environment template:
+Use Node.js 24.13 or newer. Install dependencies and copy the environment template:
 
 ```bash
 npm ci
@@ -29,6 +30,8 @@ cp .env.example .env.local
 This checkout is configured for the existing **OritApp** Supabase project. The `orit_research_studio` migration has been applied there, creating research tables, the queue, and private storage buckets. `.env.local` contains that project's URL and a generated workspace secret. Add the Orit project's **server-only** `sb_secret_...` or legacy `service_role` key to `SUPABASE_SERVICE_ROLE_KEY` in that file; an `sb_publishable_...` key cannot access the research tables. Keep `ORIT_WORKSPACE_SECRET` stable and private; replacing it changes the derived local workspace identity unless `ORIT_LOCAL_OWNER_ID` is set. Existing browser-cookie workspaces can be retained by setting `ORIT_LOCAL_OWNER_ID` to their saved owner UUID. Never put the service-role or provider keys in a `NEXT_PUBLIC_` variable.
 
 Set `OPENAI_API_KEY` and `EXA_API_KEY` for live research. `SOLARI_API_KEY` enables selective browser extraction; an inaccessible page without it is recorded as an evidence gap. Deep simulation also requires `TALLY_API_KEY` and `TERAC_API_KEY` in `.env.local`. Obtain the Tally key from your Tally account's API keys; the Codex Tally plugin's OAuth connection is separate from the local worker. The worker calls Tally MCP at `https://api.tally.so/mcp` with `Authorization: Bearer <TALLY_API_KEY>`. Set `TALLY_WORKSPACE_ID` if your key has access to multiple non-personal workspaces. Set `RESEARCH_BUDGET_*_USD=0` and `RESEARCH_DAILY_RUN_LIMIT=0` for no application-level spend or daily run caps. Positive values are optional caps. Every model and provider call still records usage and estimated cost. The website and worker run on your computer, but research still calls the configured Supabase, OpenAI, Exa, Tally, and Terac services as needed. `APP_BASE_URL` is not required for this local version.
+
+Add `GMAIL_USER` and `GMAIL_APP_PASSWORD` for the dedicated inbox to `.env.local`. The local inbox poller needs these credentials. The optional hosted outreach agent also needs its function secrets configured for OritApp; see [outreach setup](docs/OUTREACH_SETUP.md). Outbound sending must be enabled explicitly. A product idea and audience should be present in the email for automatic research. An order number in email text is saved as an **unverified reference**; this version does not check payment status.
 
 `RESEARCH_DAILY_RUN_LIMIT` defaults to zero (unlimited). Idempotent retries reuse the same run. Projects and pending runs are shared across local browser tabs and sessions using the same server configuration.
 

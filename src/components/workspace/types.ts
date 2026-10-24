@@ -1,5 +1,5 @@
 export type ResearchMode = "light_research" | "light_simulation" | "deep_simulation";
-export type WorkspaceView = "chat" | "explore" | "report";
+export type WorkspaceView = "home" | "activity" | "explore" | "report";
 
 export type Project = {
   id: string;
