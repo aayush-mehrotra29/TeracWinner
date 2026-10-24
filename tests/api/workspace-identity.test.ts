@@ -1,54 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createWorkspaceToken, ownerIdForWorkspaceToken, validWorkspaceToken,
-  WORKSPACE_COOKIE, workspaceCookieOptions, workspaceSecret,
+  localWorkspaceOwnerId, workspaceSecret, WorkspaceSecretUnavailableError,
 } from "../../src/lib/api/workspace-identity";
 
 const secret = Buffer.alloc(32, 7);
 
-test("each browser token identifies one stable, distinct UUID workspace", () => {
-  const first = createWorkspaceToken(secret);
-  const second = createWorkspaceToken(secret);
-  assert.ok(validWorkspaceToken(first, secret));
-  assert.ok(validWorkspaceToken(second, secret));
-  assert.notEqual(first, second);
-  const firstOwner = ownerIdForWorkspaceToken(first, secret);
-  assert.match(firstOwner, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  assert.equal(ownerIdForWorkspaceToken(first, secret), firstOwner);
-  assert.notEqual(ownerIdForWorkspaceToken(second, secret), firstOwner);
-  assert.equal(validWorkspaceToken(first, Buffer.alloc(32, 8)), false);
-});
-
-test("only canonical 256-bit browser credentials are accepted", () => {
-  const valid = createWorkspaceToken(secret);
-  for (const malformed of [undefined, "", "a", "0".repeat(43), "x".repeat(44),
-    "A".repeat(42) + "!", valid.slice(0, -1) + (valid.endsWith("a") ? "b" : "a")]) {
-    assert.equal(validWorkspaceToken(malformed, secret), false);
+function withIdentityEnvironment(action: () => void) {
+  const previousSecret = process.env.ORIT_WORKSPACE_SECRET;
+  const previousOwner = process.env.ORIT_LOCAL_OWNER_ID;
+  try { action(); } finally {
+    if (previousSecret === undefined) delete process.env.ORIT_WORKSPACE_SECRET;
+    else process.env.ORIT_WORKSPACE_SECRET = previousSecret;
+    if (previousOwner === undefined) delete process.env.ORIT_LOCAL_OWNER_ID;
+    else process.env.ORIT_LOCAL_OWNER_ID = previousOwner;
   }
-  assert.throws(() => ownerIdForWorkspaceToken("visitor-chosen-id", secret));
-});
+}
 
-test("server identity secret requires exactly 32 base64-encoded random bytes", () => {
-  const previous = process.env.ORIT_WORKSPACE_SECRET;
-  try {
-    process.env.ORIT_WORKSPACE_SECRET = secret.toString("base64");
-    assert.deepEqual(workspaceSecret(), secret);
-    process.env.ORIT_WORKSPACE_SECRET = "too-short";
-    assert.equal(workspaceSecret(), null);
-  } finally {
-    if (previous === undefined) delete process.env.ORIT_WORKSPACE_SECRET;
-    else process.env.ORIT_WORKSPACE_SECRET = previous;
-  }
-});
+test("all browser contexts on one local server use the same owner", () => withIdentityEnvironment(() => {
+  delete process.env.ORIT_LOCAL_OWNER_ID;
+  process.env.ORIT_WORKSPACE_SECRET = secret.toString("base64");
+  const first = localWorkspaceOwnerId();
+  assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(localWorkspaceOwnerId(), first);
+  process.env.ORIT_WORKSPACE_SECRET = Buffer.alloc(32, 8).toString("base64");
+  assert.notEqual(localWorkspaceOwnerId(), first);
+}));
 
-test("local workspace credential stays HTTP-only and host-scoped", () => {
-  const options = workspaceCookieOptions(false);
-  assert.equal(WORKSPACE_COOKIE, "orit_workspace_v1");
-  assert.equal(options.httpOnly, true);
-  assert.equal(options.sameSite, "lax");
-  assert.equal(options.path, "/");
-  assert.equal(options.secure, false);
-  assert.ok(options.maxAge >= 60 * 60 * 24 * 30);
-  assert.equal(workspaceCookieOptions(true).secure, true);
-});
+test("an existing local owner can be retained across the identity change", () => withIdentityEnvironment(() => {
+  process.env.ORIT_WORKSPACE_SECRET = secret.toString("base64");
+  process.env.ORIT_LOCAL_OWNER_ID = "86E7B651-0D1A-410E-BA7B-FFEC57712B64";
+  assert.equal(localWorkspaceOwnerId(), "86e7b651-0d1a-410e-ba7b-ffec57712b64");
+  process.env.ORIT_LOCAL_OWNER_ID = "not-a-uuid";
+  assert.throws(() => localWorkspaceOwnerId(), WorkspaceSecretUnavailableError);
+}));
+
+test("server identity secret requires exactly 32 base64-encoded bytes", () => withIdentityEnvironment(() => {
+  delete process.env.ORIT_LOCAL_OWNER_ID;
+  process.env.ORIT_WORKSPACE_SECRET = secret.toString("base64");
+  assert.deepEqual(workspaceSecret(), secret);
+  process.env.ORIT_WORKSPACE_SECRET = "too-short";
+  assert.equal(workspaceSecret(), null);
+  assert.throws(() => localWorkspaceOwnerId(), WorkspaceSecretUnavailableError);
+}));

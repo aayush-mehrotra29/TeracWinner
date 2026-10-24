@@ -7,25 +7,35 @@ export async function GET() {
   try {
     const user = await requireUser();
     const db = createAdminClient();
-    const { data: projects, error } = await db.from("projects").select("*")
-      .eq("owner_id", user.id).order("updated_at", { ascending: false }).limit(100);
-    if (error) throw error;
-    const ids = projects?.map((project) => project.id) ?? [];
-    if (!ids.length) return privateJson({ projects: [] });
-    const { data: runs, error: runsError } = await db.from("runs")
-      .select("id,project_id,mode,status,stage,created_at,version")
-      .eq("owner_id", user.id).in("project_id", ids)
-      .order("version", { ascending: false });
-    if (runsError) throw runsError;
-    const latest = new Map<string, NonNullable<typeof runs>[number]>();
-    for (const run of runs ?? []) if (!latest.has(run.project_id)) latest.set(run.project_id, run);
-    return privateJson({ projects: projects?.map((project) => ({
+    const pageSize = 500;
+    const projects: Array<{ id: string; [key: string]: unknown }> = [];
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await db.from("projects").select("*")
+        .eq("owner_id", user.id).order("updated_at", { ascending: false })
+        .order("id", { ascending: true }).range(offset, offset + pageSize - 1);
+      if (error) throw error;
+      projects.push(...(data ?? []));
+      if (!data || data.length < pageSize) break;
+    }
+    if (!projects.length) return privateJson({ projects: [] });
+
+    const latest = new Map<string, { id: string; mode: string; status: string; stage: string }>();
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await db.from("runs")
+        .select("id,project_id,mode,status,stage,version")
+        .eq("owner_id", user.id).order("version", { ascending: false })
+        .order("id", { ascending: true }).range(offset, offset + pageSize - 1);
+      if (error) throw error;
+      for (const run of data ?? []) if (!latest.has(run.project_id)) latest.set(run.project_id, run);
+      if (!data || data.length < pageSize) break;
+    }
+    return privateJson({ projects: projects.map((project) => ({
       ...project,
       latest_run_id: latest.get(project.id)?.id ?? null,
       mode: latest.get(project.id)?.mode ?? null,
       status: latest.get(project.id)?.status ?? null,
       stage: latest.get(project.id)?.stage ?? null,
-    })) ?? [] });
+    })) });
   } catch (error) {
     return apiErrorResponse(error);
   }

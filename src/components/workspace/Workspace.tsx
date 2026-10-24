@@ -10,6 +10,16 @@ import StudyReview from "./StudyReview";
 import type { Graph, Message, Project, ReportVersion, ResearchMode, RunEvent, RunSnapshot, Study, WorkspaceView } from "./types";
 
 type ProjectRun = { id: string; version: number; status?: string; mode?: ResearchMode; created_at?: string };
+const WORKSPACE_UPDATE_KEY = "orit:workspace-updated-v1";
+
+function announceWorkspaceUpdate() {
+  try {
+    // Other tabs receive this event; the marker contains no project data.
+    window.localStorage.setItem(WORKSPACE_UPDATE_KEY, crypto.randomUUID());
+  } catch {
+    // Focus and visibility refresh still work when browser storage is disabled.
+  }
+}
 
 const stageLabels: Record<string, string> = {
   intake: "Frame the decision", evidence: "Find market evidence", world: "Build the world model",
@@ -232,6 +242,9 @@ export default function Workspace() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const lastSeqRef = useRef(0);
   const runIdRef = useRef<string | null>(null);
+  const activeProjectIdRef = useRef<string | null>(null);
+  const latestRunIdRef = useRef<string | null>(null);
+  const refreshSequenceRef = useRef(0);
   const projectSelectionRef = useRef(0);
   const submissionRef = useRef<{ fingerprint: string; idempotencyKey: string; imageAssetIds: string[] } | null>(null);
   const messageRequestRef = useRef<{ fingerprint: string; key: string; imageAssetIds: string[] } | null>(null);
@@ -252,15 +265,53 @@ export default function Workspace() {
     setPollError(null);
   }, []);
 
+  useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
+  useEffect(() => { latestRunIdRef.current = projectRuns[0]?.id ?? null; }, [projectRuns]);
+
+  const refreshWorkspace = useCallback(async () => {
+    const refreshSequence = ++refreshSequenceRef.current;
+    const result = await api<{ projects: Project[] }>("/api/projects");
+    if (refreshSequence !== refreshSequenceRef.current) return;
+    setProjects(result.projects ?? []);
+
+    const projectId = activeProjectIdRef.current;
+    if (!projectId) return;
+    const selection = projectSelectionRef.current;
+    const previousLatestRunId = latestRunIdRef.current;
+    const currentRunId = runIdRef.current;
+    const detail = await api<{ project: Project; runs: ProjectRun[] }>(`/api/projects/${projectId}`);
+    if (refreshSequence !== refreshSequenceRef.current || selection !== projectSelectionRef.current ||
+        activeProjectIdRef.current !== projectId) return;
+    const runs = [...(detail.runs ?? [])].sort((a, b) => b.version - a.version);
+    latestRunIdRef.current = runs[0]?.id ?? null;
+    setProjectRuns(runs);
+    if (runs[0] && (!currentRunId || (currentRunId === previousLatestRunId && runs[0].id !== currentRunId))) {
+      runIdRef.current = runs[0].id;
+      setActiveRunId(runs[0].id);
+      return;
+    }
+    if (currentRunId) await loadRun(currentRunId);
+  }, [loadRun]);
+
   useEffect(() => {
     let active = true;
-    api<{ projects: Project[] }>("/api/projects").then((result) => {
-      if (active) setProjects(result.projects ?? []);
-    }).catch((cause: unknown) => {
+    const refresh = () => { void refreshWorkspace().catch((cause: unknown) => {
       if (active) setError(cause instanceof Error ? cause.message : "Could not load projects.");
     }).finally(() => { if (active) setHistoryLoading(false); });
-    return () => { active = false; };
-  }, []);
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    const onStorage = (event: StorageEvent) => { if (event.key === WORKSPACE_UPDATE_KEY) refresh(); };
+    refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [refreshWorkspace]);
 
   useEffect(() => {
     if (!activeRunId) return;
@@ -359,6 +410,8 @@ export default function Workspace() {
       const result = await api<{ project: Project; run: ProjectRun }>("/api/projects", {
         method: "POST", headers: { "content-type": "application/json", "idempotency-key": submission.idempotencyKey }, body: JSON.stringify(payload),
       });
+      refreshSequenceRef.current += 1;
+      announceWorkspaceUpdate();
       submissionRef.current = null;
       projectSelectionRef.current += 1;
       runIdRef.current = result.run.id;
@@ -399,6 +452,7 @@ export default function Workspace() {
         ...(submission.imageAssetIds.length ? { imageAssetIds: submission.imageAssetIds } : {}),
         ...(input.mode !== snapshot?.run.mode ? { mode: input.mode } : {}) };
       const result = await api<{ message: Message; answer?: Message | string; run?: ProjectRun }>(`/api/projects/${activeProjectId}/messages`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": submission.key }, body: JSON.stringify(payload) });
+      announceWorkspaceUpdate();
       messageRequestRef.current = null;
       if (result.run?.id && result.run.id !== activeRunId) {
         setProjectRuns((previous) => [result.run!, ...previous.filter((run) => run.id !== result.run!.id)].sort((a, b) => b.version - a.version));
@@ -417,6 +471,7 @@ export default function Workspace() {
     setError(null);
     try {
       await api(`/api/studies/${studyId}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approve: true, shareApproved: true, quoteId, amountUsd, approvalFingerprint }) });
+      announceWorkspaceUpdate();
       if (activeRunId) await loadRun(activeRunId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not approve the study.");
@@ -565,7 +620,7 @@ export default function Workspace() {
           : <>
             <details className="studio-research-progress"><summary>Run progress · {stages.filter((stage) => completedStages.has(stage)).length} of {stages.length} stages <span>{activeStatusLabel}</span></summary><ol className="studio-stage-list">{stages.map((stage, index) => <li key={stage} className={`${completedStages.has(stage) ? "is-done" : snapshot.run.stage === stage ? "is-current" : ""}`}><span className="studio-stage-number">{String(index + 1).padStart(2, "0")}</span><span>{stageLabels[stage]}</span><span className="studio-stage-symbol">{completedStages.has(stage) ? "✓" : snapshot.run.stage === stage ? "↗" : ""}</span></li>)}</ol><p>Progress is reconstructed from saved run events.</p></details>
             {researchView === "explore" ? <div className="studio-explore-page"><div className="studio-explore-toolbar"><div><span className="studio-caps">Inspectable simulation</span><h2>{surveyPhase && surveyPhase !== "started" ? "The map begins after a human response." : "See how the conclusion formed."}</h2><p>{surveyPhase && surveyPhase !== "started" ? "The survey and first Terac response will unlock the research stages." : "Every node and connection comes from a saved research artifact."}</p></div>{(!surveyPhase || surveyPhase === "started") && <button type="button" onClick={() => setSelectedSeq(null)} className={selectedSeq === null ? "is-current" : ""}>Latest map <ArrowRight size={15} /></button>}</div>{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{(!surveyPhase || surveyPhase === "started") && <ExploreMap graph={graph} sources={mapSources} />}{(!surveyPhase || surveyPhase === "started") && <div className="studio-timeline"><div><span className="studio-caps">Run history</span><h3>Replay completed stages</h3></div><div className="studio-timeline-scroll"><button type="button" className={selectedSeq === null ? "is-active" : ""} onClick={() => setSelectedSeq(null)}><span>NOW</span><strong>Latest</strong></button>{timelineEntries.map(({ event, replaySeq }) => <button type="button" key={event.seq} className={selectedSeq === replaySeq ? "is-active" : ""} onClick={() => setSelectedSeq(replaySeq)}><span>{String(event.seq).padStart(2, "0")}</span><strong>{stageLabels[event.stage ?? ""] ?? event.stage}</strong></button>)}</div></div>}</div>
-            : <div className="studio-report-page">{(snapshot.reports?.length ?? 0) > 1 && <div className="studio-report-versions"><span className="studio-caps">Report history</span><div>{snapshot.reports!.map((report) => <button type="button" key={report.id} className={(visibleReport?.version ?? 0) === report.version ? "is-active" : ""} onClick={() => setSelectedReportVersion(report.version)}>v{report.version} · {report.kind === "human_addendum" ? "Human addendum" : "Synthetic report"}</button>)}</div></div>}{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{surveyPhase && surveyPhase !== "started" ? null : <ReportView report={visibleReport} runId={snapshot.run.id} />}{snapshot.study && reportReady && snapshot.run.status !== "awaiting_approval" && <StudyReview studyId={snapshot.study.id} onReview={() => loadRun(snapshot.run.id)} />}</div>}
+            : <div className="studio-report-page">{(snapshot.reports?.length ?? 0) > 1 && <div className="studio-report-versions"><span className="studio-caps">Report history</span><div>{snapshot.reports!.map((report) => <button type="button" key={report.id} className={(visibleReport?.version ?? 0) === report.version ? "is-active" : ""} onClick={() => setSelectedReportVersion(report.version)}>v{report.version} · {report.kind === "human_addendum" ? "Human addendum" : "Synthetic report"}</button>)}</div></div>}{surveyPhase && <SurveyGateCard study={snapshot.study} phase={surveyPhase} assetIds={runInputImageIds} />}{surveyPhase && surveyPhase !== "started" ? null : <ReportView report={visibleReport} runId={snapshot.run.id} />}{snapshot.study && reportReady && snapshot.run.status !== "awaiting_approval" && <StudyReview studyId={snapshot.study.id} onReview={() => { announceWorkspaceUpdate(); return loadRun(snapshot.run.id); }} />}</div>}
           </>}
         </section>
       </div>

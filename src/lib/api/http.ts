@@ -1,8 +1,7 @@
-import { cookies, headers } from "next/headers";
+import { headers } from "next/headers";
 import { PersistenceUnavailableError } from "@/lib/db/admin";
 import {
-  createWorkspaceToken, ownerIdForWorkspaceToken, validWorkspaceToken,
-  WORKSPACE_COOKIE, workspaceCookieOptions, workspaceSecret, WorkspaceSecretUnavailableError,
+  localWorkspaceOwnerId, WorkspaceSecretUnavailableError,
 } from "@/lib/api/workspace-identity";
 
 export class ApiError extends Error {
@@ -12,13 +11,11 @@ export class ApiError extends Error {
 }
 
 export async function requireUser() {
-  const secret = workspaceSecret();
-  if (!secret) throw new WorkspaceSecretUnavailableError();
   const requestHeaders = await headers();
   const origin = requestHeaders.get("origin");
   const host = requestHeaders.get("host");
-  // The browser session is a bearer capability. Reject cross-origin browser
-  // requests before they can use it for paid runs or study approvals.
+  // The app is local and has no sign-in. Reject cross-origin browser requests
+  // before they can start paid runs or approve a study.
   if (origin) {
     let originHost: string;
     try { originHost = new URL(origin).host; } catch { throw new ApiError(403, "Cross-origin request denied."); }
@@ -28,14 +25,7 @@ export async function requireUser() {
     throw new ApiError(403, "Cross-origin request denied.");
   }
 
-  const cookieStore = await cookies();
-  const existing = cookieStore.get(WORKSPACE_COOKIE)?.value;
-  const token = validWorkspaceToken(existing, secret) ? existing : createWorkspaceToken(secret);
-  if (token !== existing) {
-    cookieStore.set(WORKSPACE_COOKIE, token,
-      workspaceCookieOptions(requestHeaders.get("x-forwarded-proto") === "https"));
-  }
-  return { id: ownerIdForWorkspaceToken(token, secret) };
+  return { id: localWorkspaceOwnerId() };
 }
 
 export async function readJson(request: Request, maxBytes = 32_768): Promise<unknown> {
